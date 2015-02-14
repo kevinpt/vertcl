@@ -74,6 +74,11 @@ package vt_expr_interpreter is
   type ecommand_map is array (natural range <>) of ecommand_info_acc;
 
 
+  type eresult_obj is record
+    value : vt_eparse_node_acc; -- Result of expression evaluation
+    is_ref : boolean; -- Indicates if value is a reference or an owned object
+  end record;
+
   type expr_interp;
   type expr_interp_acc is access expr_interp;
   type expr_interp is record
@@ -81,8 +86,7 @@ package vt_expr_interpreter is
 
     rand_seed1, rand_seed2 : positive; -- Current state of the PRNG for srand() and rand()
 
-    return_value : vt_eparse_node_acc; -- Result of expression evaluation
-    return_is_ref : boolean;           -- Indicates if return_value is a reference or an owned object
+    result : eresult_obj;
   end record;
 
   -- ## Initialize an expression interpreter
@@ -155,23 +159,23 @@ package body vt_expr_interpreter is
 
   -- // Set the return value
   -- /  is_ref - Return value is a reference when true, otherwise it is an object owned by the interp object
-  procedure set_return( EIO : inout expr_interp_acc; variable rval : vt_eparse_node_acc := null;
+  procedure set_result( EIO : inout expr_interp_acc; variable rval : vt_eparse_node_acc := null;
     is_ref : boolean := true ) is
   begin
-    report "@@@@@@@@@@@ set_return";
-    if EIO.return_value /= null and not EIO.return_is_ref then
-      report "DBG: set_return: freeing old value: " & integer'image(EIO.return_value.id); -- %2008 DEBUG%
-      free(EIO.return_value);
+    report "@@@@@@@@@@@ set_result";
+    if EIO.result.value /= null and not EIO.result.is_ref then
+      report "DBG: set_result: freeing old value: " & integer'image(EIO.result.value.id); -- %2008 DEBUG%
+      free(EIO.result.value);
     end if;
 
     -- We defer copying the return value when it is a reference, otherwise we take
     -- ownership of an independent value node tree.
-    EIO.return_value := rval;
+    EIO.result.value := rval;
 
     if rval /= null then
-      EIO.return_is_ref := is_ref;
+      EIO.result.is_ref := is_ref;
     else
-      EIO.return_is_ref := false;
+      EIO.result.is_ref := false;
     end if;
 
   end procedure;
@@ -196,17 +200,17 @@ package body vt_expr_interpreter is
     cur := args;
     while cur /= null loop
       eval_expr(EIO, cur);
-      if EIO.return_value.tok.kind /= ETOK_integer then
+      if EIO.result.value.tok.kind /= ETOK_integer then
         mvf := real(mvi);
         is_integer := false;
       end if;
 
       if is_integer then
-        if EIO.return_value.tok.int > mvi then
-          mvi := EIO.return_value.tok.int;
+        if EIO.result.value.tok.int > mvi then
+          mvi := EIO.result.value.tok.int;
         end if;
       else -- Floating point
-        to_real(EIO, EIO.return_value, ra);
+        to_real(EIO, EIO.result.value, ra);
         if ra > mvf then
           mvf := ra;
         end if;
@@ -215,10 +219,10 @@ package body vt_expr_interpreter is
     end loop;
 
     if is_integer then
-      EIO.return_value.tok.int := mvi;
+      EIO.result.value.tok.int := mvi;
     else
-      EIO.return_value.tok.float := mvf;
-      EIO.return_value.tok.kind := ETOK_float;
+      EIO.result.value.tok.float := mvf;
+      EIO.result.value.tok.kind := ETOK_float;
     end if;
   end procedure;
 
@@ -233,17 +237,17 @@ package body vt_expr_interpreter is
     cur := args;
     while cur /= null loop
       eval_expr(EIO, cur);
-      if EIO.return_value.tok.kind /= ETOK_integer then
+      if EIO.result.value.tok.kind /= ETOK_integer then
         mvf := real(mvi);
         is_integer := false;
       end if;
 
       if is_integer then
-        if EIO.return_value.tok.int < mvi then
-          mvi := EIO.return_value.tok.int;
+        if EIO.result.value.tok.int < mvi then
+          mvi := EIO.result.value.tok.int;
         end if;
       else -- Floating point
-        to_real(EIO, EIO.return_value, ra);
+        to_real(EIO, EIO.result.value, ra);
         if ra < mvf then
           mvf := ra;
         end if;
@@ -252,10 +256,10 @@ package body vt_expr_interpreter is
     end loop;
 
     if is_integer then
-      EIO.return_value.tok.int := mvi;
+      EIO.result.value.tok.int := mvi;
     else
-      EIO.return_value.tok.float := mvf;
-      EIO.return_value.tok.kind := ETOK_float;
+      EIO.result.value.tok.float := mvf;
+      EIO.result.value.tok.kind := ETOK_float;
     end if;
   end procedure;
 
@@ -278,7 +282,7 @@ package body vt_expr_interpreter is
       new_vt_eparse_node(rval, EN_numeric);
       uniform(EIO.rand_seed1, EIO.rand_seed2, rval.tok.float);
       rval.tok.kind := ETOK_float;
-      set_return(EIO, rval, false);
+      set_result(EIO, rval, false);
       return;
     elsif cmd_id = ECMD_max then
       do_ecmd_max(EIO, func.child);
@@ -292,7 +296,7 @@ package body vt_expr_interpreter is
     assert_true(func.child /= null, "Missing arguments to function '" &
       func.tok.data.all & "'", failure, EIO);
     eval_expr(EIO, func.child);
-    arg1 := EIO.return_value;
+    arg1 := EIO.result.value;
 
     new_vt_eparse_node(rval, EN_numeric);
     rval.tok.kind := ETOK_float;
@@ -359,7 +363,7 @@ package body vt_expr_interpreter is
         to_real(EIO, arg1, rx);
 
         eval_expr(EIO, func.child.succ);
-        arg2 := EIO.return_value;
+        arg2 := EIO.result.value;
         to_real(EIO, arg2, ry);
 
         case cmd_id is
@@ -376,7 +380,7 @@ package body vt_expr_interpreter is
         end case;
     end case;
 
-    set_return(EIO, rval, false);
+    set_result(EIO, rval, false);
   end procedure;
 
 
@@ -394,7 +398,7 @@ package body vt_expr_interpreter is
 
     if is_unary_operator(expr.tok.kind) and expr.child.succ = null then -- Unary operators
         eval_expr(EIO, expr.child);
-        lterm := EIO.return_value;
+        lterm := EIO.result.value;
         assert_true(lterm.kind = EN_numeric, "Expecting numeric operand to unary operator",
           failure, EIO);
 
@@ -412,16 +416,16 @@ package body vt_expr_interpreter is
         end if;
 
         -- lterm is already the return value
-        --EIO.return_value := lterm;
-        --set_return(EIO, lterm);
+        --EIO.result.value := lterm;
+        --set_result(EIO, lterm);
 
     elsif is_operator(expr.tok.kind) then -- Binary operators
       eval_expr(EIO, expr.child);
-      --lterm := EIO.return_value;
-      copy_parse_tree(EIO.return_value, lterm);
+      --lterm := EIO.result.value;
+      copy_parse_tree(EIO.result.value, lterm);
       eval_expr(EIO, expr.child.succ);
-      --rterm := EIO.return_value;
-      copy_parse_tree(EIO.return_value, rterm);
+      --rterm := EIO.result.value;
+      copy_parse_tree(EIO.result.value, rterm);
 
       assert_true(lterm.kind = EN_numeric and rterm.kind = EN_numeric,
         "Expecting numeric operands to binary operator", failure, EIO);
@@ -469,8 +473,8 @@ package body vt_expr_interpreter is
           when ETOK_pow =>
             rval.tok.float := lreal ** rreal;
           when others =>
-            --free(EIO.return_value);
-            --EIO.return_value := null;
+            --free(EIO.result.value);
+            --EIO.result.value := null;
             free(rval); rval := null;
         end case;
 
@@ -511,13 +515,13 @@ package body vt_expr_interpreter is
           when ETOK_pow =>
             rval.tok.int := lterm.tok.int ** rterm.tok.int;
           when others =>
-            free(EIO.return_value);
-            --EIO.return_value := null;
+            free(EIO.result.value);
+            --EIO.result.value := null;
             free(rval); rval := null;
         end case;
       end if;
       free(lterm); free(rterm);
-      set_return(EIO, rval, false);
+      set_result(EIO, rval, false);
 
     else -- Others
       case expr.kind is
@@ -525,13 +529,13 @@ package body vt_expr_interpreter is
           eval_func(EIO, expr);
 
         when EN_numeric =>
-          --copy_parse_tree(expr, EIO.return_value);
+          --copy_parse_tree(expr, EIO.result.value);
           copy_parse_tree(expr, rval);
-          set_return(EIO, rval, false);
+          set_result(EIO, rval, false);
 
         when others =>
-          --EIO.return_value := null;
-          set_return(EIO);
+          --EIO.result.value := null;
+          set_result(EIO);
       end case;
     end if;
 
@@ -543,8 +547,8 @@ package body vt_expr_interpreter is
   procedure expr_interp_init( EIO : inout expr_interp_acc ) is
   begin
     EIO := new expr_interp;
-    EIO.return_value := null;
-    EIO.return_is_ref := false;
+    EIO.result.value := null;
+    EIO.result.is_ref := false;
 
     -- Build table of internal commands
     for id in builtin_expr_commands loop
@@ -557,17 +561,17 @@ package body vt_expr_interpreter is
   -- ## Test if value of last evaluated expression is true
   procedure expr_is_true(EIO : inout expr_interp_acc; is_true : out boolean ) is
   begin
-    if EIO.return_value = null then
+    if EIO.result.value = null then
       is_true := false;
       return;
 
     else
-      case EIO.return_value.tok.kind is
+      case EIO.result.value.tok.kind is
         when ETOK_integer =>
-          is_true := EIO.return_value.tok.int /= 0;
+          is_true := EIO.result.value.tok.int /= 0;
 
         when ETOK_float =>
-          is_true := EIO.return_value.tok.float /= 0.0;
+          is_true := EIO.result.value.tok.float /= 0.0;
 
         when others =>
           is_true := false;
@@ -581,11 +585,11 @@ package body vt_expr_interpreter is
     variable cur_cmd, succ_cmd : ecommand_info_acc;
   begin
 
-    if EIO.return_value /= null and not EIO.return_is_ref then
-      report ">>>>>>>>>>>>>>>>>>>>> DBG: free expr interp: return val id: " & integer'image(EIO.return_value.id); -- %2008 DEBUG%
+    if EIO.result.value /= null and not EIO.result.is_ref then
+      report ">>>>>>>>>>>>>>>>>>>>> DBG: free expr interp: return val id: " & integer'image(EIO.result.value.id); -- %2008 DEBUG%
 
-      free(EIO.return_value);
-      EIO.return_value := null;
+      free(EIO.result.value);
+      EIO.result.value := null;
     end if;
 
     -- Release the command list
