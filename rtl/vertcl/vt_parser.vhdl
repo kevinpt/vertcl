@@ -63,6 +63,10 @@ package vt_parser is
   -- #  to an interpreter object for execution.
   procedure parse_vertcl_file( fname : in string; parse_tree : inout vt_parse_node_acc );
 
+  -- ## Parse a Tcl script string. The result is a parse tree that can be passed
+  -- #  to an interpreter object for execution.
+  procedure parse_vertcl_string( script : inout unbounded_string; parse_tree : inout vt_parse_node_acc );
+
   -- ## Write a parse tree to a text file
   procedure write_parse_tree( fname : in string; variable parse_tree : in vt_parse_node_acc );
 
@@ -97,6 +101,7 @@ package vt_parser is
 
 end package;
 
+-- FIXME: Handle null command substitutions []
 
 
 use std.textio.all;
@@ -587,6 +592,32 @@ package body vt_parser is
     parse_command_list(VLO, parse_tree);
 
     free(VLO);
+  end procedure;
+
+
+  -- ## Parse a Tcl script string. The result is a parse tree that can be passed
+  -- #  to an interpreter object for execution.
+  procedure parse_vertcl_string( script : inout unbounded_string; parse_tree : inout vt_parse_node_acc ) is
+    variable buf : text_buffer;
+    variable VLO : vt_lex_acc;
+    variable tnode : vt_parse_node_acc;
+  begin
+  
+  
+    append(script, buf);
+    vt_lexer_init(buf, VLO);
+
+    -- Start with a temporary top-level command node
+    new_vt_parse_node(tnode, VN_command);
+
+    parse_command(VLO, tnode);
+    parse_tree := tnode.child;
+    tnode.child := null;
+    free(tnode);
+    free(buf); -- FIXME: is this right?
+
+    free(VLO);
+  
   end procedure;
 
 
