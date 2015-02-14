@@ -32,6 +32,10 @@ package vt_interpreter is
   procedure vt_interp_init( VIO : inout vt_interp_acc );
   procedure interpret( VIO : inout vt_interp_acc );
 
+  -- FIXME: Expand exported API calls
+  alias get_variable is vertcl.vt_interpreter_core.get_variable[vt_interp_acc, string, scope_var_acc];
+  alias get_variable is vertcl.vt_interpreter_core.get_variable[scope_obj_acc, string, scope_var_acc];
+
 
   type vertcl_interpreter is protected
     procedure init;
@@ -231,12 +235,10 @@ package body vt_interpreter is
     arg_def := cmd_def.arg_defs;
     while arg /= null and arg_def /= null loop
       if arg_def.tok.data.all = "args" then -- Append remaining arguments as a group
-        --write_parse_tree("args_tree1.txt", arg);
 
         -- Copy current arg into new next_arg
-        new_vt_parse_node(next_arg, arg.kind); --next_arg := new vt_parse_node;
+        new_vt_parse_node(next_arg, arg.kind);
         next_arg.tok := arg.tok;
-        --next_arg.kind := arg.kind;
         next_arg.succ := arg.succ;
         next_arg.child := arg.child;
 
@@ -246,14 +248,9 @@ package body vt_interpreter is
         arg.child := next_arg;
         arg.succ := null;
         arg.kind := VN_group;
-        --write_parse_tree("args_tree.txt", arg);
       end if;
 
-      next_arg := arg.succ;
-      arg.succ := null; -- Temporarily disconnect the argument value from its siblings so it can be copied
-      --report "@@@@@ define variable: " & arg_def.tok.data.all;
-      set_variable(VIO, arg_def.tok.data.all, arg);
-      arg.succ := next_arg;
+      set_variable(VIO, arg_def.tok.data.all, arg, true, false); -- Copy just this arg into variable
 
       arg := arg.succ;
       arg_def := arg_def.succ;
@@ -315,78 +312,34 @@ package body vt_interpreter is
     args := cmd.child.succ;
 
     case cmd_id is
-      when CMD_append =>
-        do_cmd_append(VIO, args);
-
-      when CMD_break =>
-        do_cmd_break(VIO, args);
-
-      when CMD_concat =>
-        do_cmd_concat(VIO, args);
-
-      when CMD_continue =>
-        do_cmd_continue(VIO, args);
-
-      when CMD_exit =>
-        do_cmd_exit(VIO, args);
-
-      when CMD_expr =>
-        do_cmd_expr(VIO, args);
-
-      when CMD_for =>
-        do_cmd_for(VIO, args);
-
-      when CMD_global =>
-        do_cmd_global(VIO, args);
-
-      when CMD_if =>
-        do_cmd_if(VIO, args);
-
-      when CMD_incr =>
-        do_cmd_incr(VIO, args);
-
-      when CMD_join =>
-        do_cmd_join(VIO, args);
-
-      when CMD_lappend =>
-        do_cmd_lappend(VIO, args);
-
-      when CMD_lindex =>
-        do_cmd_lindex(VIO, args);
-
-      when CMD_llength =>
-        do_cmd_llength(VIO, args);
-
-      when CMD_list =>
-        do_cmd_list(VIO, args);
-
-      when CMD_proc =>
-        do_cmd_proc(VIO, args);
-
-      when CMD_puts =>
-        do_cmd_puts(VIO, args);
-
-      when CMD_return =>
-        do_cmd_return(VIO, args);
-
-      when CMD_set =>
-        do_cmd_set(VIO, args);
-
-      when CMD_upvar =>
-        do_cmd_upvar(VIO, args);
-
-      when CMD_wait =>
-        do_cmd_wait(VIO, args);
-
-      when CMD_while =>
-        do_cmd_while(VIO, args);
-
-      when CMD_yield =>
-        do_cmd_yield(VIO, args);
-
-      when CMD_proc_def =>
-        exec_proc(VIO, args, cmd_def);
-
+      when CMD_append =>        do_cmd_append(VIO, args);
+      when CMD_break =>         do_cmd_break(VIO, args);
+      when CMD_concat =>        do_cmd_concat(VIO, args);
+      when CMD_continue =>      do_cmd_continue(VIO, args);
+      when CMD_exit =>          do_cmd_exit(VIO, args);
+      when CMD_expr =>          do_cmd_expr(VIO, args);
+      when CMD_for =>           do_cmd_for(VIO, args);
+      when CMD_foreach =>       do_cmd_foreach(VIO, args);
+      when CMD_global =>        do_cmd_global(VIO, args);
+      when CMD_if =>            do_cmd_if(VIO, args);
+      when CMD_incr =>          do_cmd_incr(VIO, args);
+      when CMD_join =>          do_cmd_join(VIO, args);
+      when CMD_lappend =>       do_cmd_lappend(VIO, args);
+      when CMD_lindex =>        do_cmd_lindex(VIO, args);
+      when CMD_linsert =>       do_cmd_linsert(VIO, args);
+      when CMD_list =>          do_cmd_list(VIO, args);
+      when CMD_llength =>       do_cmd_llength(VIO, args);
+      when CMD_lset =>          do_cmd_lset(VIO, args);
+      when CMD_lrange =>        do_cmd_lrange(VIO, args);
+      when CMD_proc =>          do_cmd_proc(VIO, args);
+      when CMD_puts =>          do_cmd_puts(VIO, args);
+      when CMD_return =>        do_cmd_return(VIO, args);
+      when CMD_set =>           do_cmd_set(VIO, args);
+      when CMD_upvar =>         do_cmd_upvar(VIO, args);
+      when CMD_wait =>          do_cmd_wait(VIO, args);
+      when CMD_while =>         do_cmd_while(VIO, args);
+      when CMD_yield =>         do_cmd_yield(VIO, args);
+      when CMD_proc_def =>      exec_proc(VIO, args, cmd_def);
       when others =>
         assert_true(false, "Unknown command: " & cmd.child.tok.data.all, error, VIO);
     end case;
@@ -419,21 +372,21 @@ package body vt_interpreter is
         when MODE_SUBST => -- Complete substitution
           VIO.scope.script.script_state := MODE_NORMAL;
 
-          if VIO.return_value /= null then
-            if VIO.return_is_ref then -- We need to copy the return value from its reference
+          if VIO.result.value /= null then
+            if VIO.result.is_ref then -- We need to copy the return value from its reference
               report ">>>>>>>>>>>>>>>> COPYING RETURN REFERENCE <<<<<<<<<<<<<<<<<<<<<";
-              copy_parse_tree(VIO.return_value, new_script);
-              VIO.return_value := new_script;
-              VIO.return_is_ref := false;
+              copy_parse_tree(VIO.result.value, new_script);
+              VIO.result.value := new_script;
+              VIO.result.is_ref := false;
             end if;
 
             if cur_arg.kind /= VN_string_seg and cur_arg.kind /= VN_splat then
-              splice_parse_tree(VIO.return_value, cur_arg);
+              splice_parse_tree(VIO.result.value, cur_arg);
             else -- Substituting in segmented string or splat
-              report ">>>>>>>>>>>>>>>>>>>>>> SPLICE SPLAT <<<<<<<<<<<<<<<<<<<<<<<";
-              splice_parse_tree(VIO.return_value, VIO.scope.script.cur_seg);
+              report ">>>>>>>>>>>>>>>>>>>>>> SPLICE SPLAT OR SEG STR <<<<<<<<<<<<<<<<<<<<<<<";
+              splice_parse_tree(VIO.result.value, VIO.scope.script.cur_seg);
             end if;
-            VIO.return_value := null;
+            VIO.result.value := null;
 
           else -- Replace with empty string
             if cur_arg.kind /= VN_string_seg then
@@ -716,9 +669,11 @@ package body vt_interpreter is
     -- Create top-level scope
     VIO.scope_stack := new scope_obj;
     VIO.scope := VIO.scope_stack;
+    
+    VIO.recursion_limit := 1000;
 
-    VIO.return_value := null;
-    VIO.return_is_ref := false;
+    VIO.result.value := null;
+    VIO.result.is_ref := false;
     VIO.exit_code := 0;
 
     -- Build table of internal commands

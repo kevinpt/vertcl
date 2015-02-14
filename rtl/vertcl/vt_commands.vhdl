@@ -30,37 +30,57 @@
 --  continue DONE
 --  error
 --  eval
---  exit    DONE
---  expr    partial
---  for     DONE
---  foreach
+--  exit     DONE
+--  expr     partial
+--  for      DONE
+--  foreach  partial
 --  ??format
---  global  DONE
---  if      DONE
---  incr    DONE
---  info
---  join    DONE
---  lappend DONE
---  lindex  partial
---  linsert
---  list    DONE
+--  global   DONE
+--  if       DONE
+--  incr     DONE
+--  ??info
+--  join     DONE
+--  lappend  DONE
+--  lindex   DONE
+--  linsert  DONE
+--  list     DONE
 --  llength  partial
---  lrange
+--  lrange   DONE
+--  lrepeat
 --  lreplace
+--  lreverse
 --  lsearch
---  lset
---  lsort
+--  lset     DONE
+--  ??lsort
 --  ??package
 --  ??parray
---  proc    DONE
---  puts    DONE
+--  proc     DONE
+--  puts     DONE
 --  rename
---  return    partial
+--  return   partial
 --  ??scan
---  set       DONE
+--  set      DONE
 --  source
 --  split
---  string
+--  string:
+--    cat
+--    compare
+--    equal
+--    first
+--    index
+--    last
+--    length
+--    map
+--    range
+--    repeat
+--    replace
+--    reverse
+--    tolower
+--    totitle
+--    toupper
+--    trim
+--    trimleft
+--    trimright
 --  subst
 --  switch
 --  ??tailcall
@@ -84,14 +104,18 @@ package vt_commands is
   procedure do_cmd_exit( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_expr( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_for( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_foreach( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_global( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_if( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_incr( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_join( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_lappend( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_lindex( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
-  procedure do_cmd_llength( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_linsert( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_list( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_llength( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lrange( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_proc( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_puts( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -192,7 +216,7 @@ package body vt_commands is
       cur_arg := cur_arg.succ;
     end loop;
 
-    set_return(VIO, vobj);
+    set_result(VIO, vobj);
   end procedure;
 
 
@@ -217,7 +241,7 @@ package body vt_commands is
     variable img : unbounded_string;
   begin
     if args = null then -- Return empty string
-      set_return(VIO);
+      set_result(VIO);
       return;
     end if;
 
@@ -378,7 +402,7 @@ package body vt_commands is
     -- Disconnect the modified args list from its parent command so we can use
     -- it as the return value without copying
     VIO.scope.script.cur_cmd.child := null;
-    set_return(VIO, lobj, false);
+    set_result(VIO, lobj, false);
   end procedure;
 
 
@@ -486,14 +510,14 @@ package body vt_commands is
     -- Set result
     new_vt_parse_node(rval, VN_word);
 
-    case VIO.EI.return_value.tok.kind is
+    case VIO.EI.result.value.tok.kind is
       when ETOK_integer =>
         rval.tok.kind := TOK_integer;
-        rval.tok.value := VIO.EI.return_value.tok.int;
+        rval.tok.value := VIO.EI.result.value.tok.int;
 
       when ETOK_float =>
         rval.tok.kind := TOK_float;
-        rval.tok.float := VIO.EI.return_value.tok.float;
+        rval.tok.float := VIO.EI.result.value.tok.float;
 
       when others =>
         rval.tok.kind := TOK_UNKNOWN;
@@ -501,8 +525,9 @@ package body vt_commands is
 
     end case;
 
-    set_return(VIO, rval, false);
+    set_result(VIO, rval, false);
   end procedure;
+
 
 
   constant FOR_STATE_START : integer := -100100;
@@ -560,7 +585,7 @@ package body vt_commands is
       push_script(VIO.scope, MODE_LOOP, cmd_list);
 
     else -- Stop looping
-      set_return(VIO);
+      set_result(VIO);
       VIO.scope.script.script_state := MODE_NORMAL;
       a_body.tok.value := 0;
     end if;
@@ -568,12 +593,59 @@ package body vt_commands is
   end procedure;
 
 
+
+  constant FOREACH_IX_OFFSET : integer := -100000;
+
+  procedure do_cmd_foreach( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable a_list, a_body, next_val, cmd_list : vt_parse_node_acc;
+    variable ix, llength : integer;
+  begin
+    assert_true(args /= null and args.tok.kind = TOK_string, "'foreach' expecting variable name", failure, VIO);
+    
+    -- FIXME: Handle multiple lists
+    
+    a_list := args.succ; -- FIXME: validate args exist
+    a_body := a_list.succ;
+    
+    assert_true(a_list.kind = VN_group, "'foreach' expecting list", failure, VIO);
+    arg_count(a_list.child, llength);
+    
+    if a_body.tok.value < 0 then -- resuming from previous iteration
+      ix := a_body.tok.value - FOREACH_IX_OFFSET + 1;
+    else
+      ix := 0;
+    end if;
+
+    if ix = llength then -- Stop looping
+      set_result(VIO);
+      VIO.scope.script.script_state := MODE_NORMAL;
+      a_body.tok.value := 0;
+    else -- Execute next code body
+      report "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ FOREACH: " & integer'image(ix);
+
+      get_sibling(a_list.child, ix, next_val);
+      set_variable(VIO, args.tok.data.all, next_val, true, false);
+    
+    
+      assert_true(a_body.kind = VN_group, "'foreach' Expecting group for code body", failure, VIO);
+      copy_parse_tree(a_body, cmd_list);
+      convert_to_commands(cmd_list);
+      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+        "Expecting command list in 'foreach'", failure, VIO);
+      push_script(VIO.scope, MODE_LOOP, cmd_list);
+      
+      a_body.tok.value := ix + FOREACH_IX_OFFSET;
+    end if;
+  end procedure;
+
+
+
   procedure do_cmd_global( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable cur, gobj : vt_parse_node_acc;
     variable var : scope_var_acc;
   begin
     assert_true(args /= null, "'global' Missing arguments", failure, VIO);
-    set_return(VIO);
+    set_result(VIO);
     if VIO.scope = VIO.scope_stack then -- Already in global scope; Do nothing
       return;
     end if;
@@ -639,7 +711,7 @@ package body vt_commands is
         return;
       else -- Evaluate false path
         if cblock.succ = null then -- No false block
-          set_return(VIO);
+          set_result(VIO);
           return;
         end if;
 
@@ -697,12 +769,12 @@ package body vt_commands is
     get_variable(VIO, args.tok.data.all, var);
     var.var.value.tok.value := var.var.value.tok.value + inc;
 
-    set_return(VIO, var.var.value);
+    set_result(VIO, var.var.value);
 
-    --report "### incr return: " & integer'image(VIO.return_value.tok.value);
+    --report "### incr return: " & integer'image(VIO.result.value.tok.value);
   end procedure;
 
-
+-- FIXME: Bad result with [join "x {y z}" ,] should be x,y z (or x,{y z})
   procedure do_cmd_join( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable jstr, rval, elem : unbounded_string;
     variable cur, list : vt_parse_node_acc;
@@ -741,7 +813,7 @@ package body vt_commands is
     new_vt_parse_node(cur, VN_word);
     cur.tok.data := rval;
     cur.tok.kind := TOK_string;
-    set_return(VIO, cur, false);
+    set_result(VIO, cur, false);
   end procedure;
 
 
@@ -815,68 +887,224 @@ package body vt_commands is
 
     end if;
 
-    set_return(VIO, lobj);
+    set_result(VIO, lobj);
   end procedure;
 
 
-  procedure do_cmd_lindex( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
-    variable indices, cur, elem : vt_parse_node_acc;
-    variable have_indices : boolean;
-    variable llength, index, i : integer;
+
+  alias maps is extras.strings_maps;
+  constant PLUS_MINUS_SET : maps.character_set := ( '+'|'-' => true, others => false);
+
+  -- // Convert an index expression in the form of (n1|"end"([+|-]n2)*) to an integer
+  function parse_index( expr : string; length : integer) return integer is
+    variable val1, val2, op_pos, rval : integer;
   begin
-    assert_true(args /= null, "'lindex' Missing list", failure, VIO);
-    assert_true(args.kind = VN_group, "'lindex' Expecting list argument", failure, VIO);
+  
+    report ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> PARSE IX: " & expr;
+
+    op_pos := SF.index(expr, PLUS_MINUS_SET);
+  
+    if SF.index(expr, "end") = 1 then
+      val1 := length-1;
+    else
+      if op_pos > 0 then -- Get first number
+        val1 := integer'value(expr(expr'low to op_pos-1));
+      else -- Treat as a single number
+        val1 := integer'value(expr);
+      end if;
+    end if;
+    
+    if op_pos > 0 then -- There is an operator
+      report ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> GOT INDEX OP";
+      val2 := integer'value(expr(op_pos+1 to expr'high));
+      if expr(op_pos) = '+' then -- Plus
+        rval := val1 + val2;
+      else -- Minus
+        rval := val1 - val2;
+      end if;
+    else -- No operator
+      rval := val1;
+    end if;
+
+    return rval;
+
+  end function;
+  
+  procedure parse_index( node : inout vt_parse_node_acc; length : in integer; index : out integer) is
+  begin
+    if node.tok.kind = TOK_string then
+      index := parse_index(node.tok.data.all, length);
+    elsif node.tok.kind = TOK_integer then
+      index := node.tok.value;
+    else
+      report "Invalid index value" severity failure;  
+    end if;
+  end procedure;
+  
+
+  procedure do_cmd_lindex( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable start_ix, end_ix, cur, selected_list, elem : vt_parse_node_acc;
+    variable have_indices : boolean;
+    variable count, ix : integer;
+  begin
+    assert_true(args /= null and args.kind = VN_group, "'lindex' Missing list", failure, VIO);
 
     have_indices := false;
-    if args.succ /= null then -- Second index arg
+    if args.succ /= null then -- Have index args
       if args.succ.kind = VN_group then
-        indices := args.succ.child;
+        start_ix := args.succ.child;
+        get_last(args.succ.child, end_ix);
       else
-        indices := args.succ;
+        start_ix := args.succ;
+        get_last(args.succ, end_ix);
       end if;
 
-      if indices /= null then
+      if start_ix /= null then
         have_indices := true;
       end if;
     end if;
 
-    report "############################### LINDEX: " & boolean'image(have_indices);
     if not have_indices then -- Return entire list
-      copy_parse_tree(args, elem, false);
-      set_return(VIO, elem, false);
+      copy_parse_tree(args, elem, false); -- FIXME: make a no-copy operation
+      set_result(VIO, elem, false);
 
     else -- Index into the list
-      -- Get the list length
-      cur := args.child;
-      llength := 0;
-      while cur /= null loop
-        llength := llength + 1;
+
+      -- Look up nested groups until the last one we're going to retrieve an element from
+      selected_list := args;
+      cur := start_ix;
+      loop
+        assert_true(selected_list.kind = VN_group, "'lindex' Expecting a nested list object", failure, VIO);
+
+        -- Compute next index      
+        arg_count(selected_list.child, count);
+        if cur.tok.kind = TOK_string then
+          ix := parse_index(cur.tok.data.all, count);
+        else
+          ix := cur.tok.value;
+        end if;
+       
+        assert_true(ix >= 0 and ix < count, "'lindex' index out of range: " & integer'image(ix), failure, VIO);
+       
+        -- Get nested list
+        get_sibling(selected_list.child, ix, selected_list);
+        
+        exit when cur = end_ix;
+        
         cur := cur.succ;
       end loop;
 
-      -- Adjust index
-      index := indices.tok.value;
-      if index >= llength then
-        index := llength-1;
-      end if;
-      -- FIXME: handle "end" and +/- indices
+      -- Retrieve indexed value
+      copy_parse_tree(selected_list, elem, false);
+      set_result(VIO, elem, false);
+    end if;
+  end procedure;
 
-      -- Find the element
-      cur := args.child;
-      i := 0;
+
+  procedure do_cmd_linsert( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable index_expr, cur, new_list, insert_point, succ : vt_parse_node_acc;
+    variable llength, index, i : integer;
+  begin
+    assert_true(args /= null, "'linsert' Missing list", failure, VIO);
+    assert_true(args.kind = VN_group, "'linsert' Expecting list argument", failure, VIO);
+    assert_true(args.succ /= null, "'linsert' Missing index", failure, VIO);
+    index_expr := args.succ;
+
+    -- Get the list length
+    cur := args.child;
+    llength := 0;
+    while cur /= null loop
+      llength := llength + 1;
+      cur := cur.succ;
+    end loop;
+
+    -- Adjust index
+    if index_expr.tok.kind = TOK_string then
+      index := parse_index(index_expr.tok.data.all, llength+1);
+    else
+      index := index_expr.tok.value;
+    end if;
+    
+    -- Check bounds
+    if index > llength then
+      index := llength;
+    elsif index < 0 then
+      index := 0;   
+    end if;
+    
+    -- Copy the list
+    copy_parse_tree(args, new_list, false);
+    
+    if index_expr.succ /= null then -- There are elements to insert
+      
+      -- Find the node to insert after
+      cur := new_list.child;
+      i := 1;
       while cur /= null loop
         exit when i = index;
         i := i + 1;
         cur := cur.succ;
       end loop;
+      insert_point := cur;
 
-      -- We are now at the index      
+      if index > 0 then
+        succ := insert_point.succ;
+        insert_point.succ := index_expr.succ;
+        
+      else -- Start of list
+        succ := new_list.child;
+        new_list.child := index_expr.succ;
+      end if;
+      
+      -- Find end of new elements
+      cur := index_expr.succ;
+      while cur /= null loop
+        if cur.succ = null then
+          cur.succ := succ;
+          exit;      
+        end if;
+        cur := cur.succ;
+      end loop;
+      
+      -- Disconnect list elements from arg list    
+      index_expr.succ := null;
 
-      copy_parse_tree(cur, elem, false);
-      set_return(VIO, elem, false);
     end if;
-    
+        
+    set_result(VIO, new_list, false);
+
   end procedure;
+  
+  
+  procedure do_cmd_list( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable lobj, cur : vt_parse_node_acc;
+    variable has_ws : boolean;
+  begin
+    if args = null then
+      set_result(VIO);
+      return;
+    end if;
+
+    -- Convert args into a group
+    new_vt_parse_node(lobj, VN_group);
+    copy_parse_tree(args, lobj.child);
+
+    -- Groupify strings containing whitespace
+    -- NOTE: This doesn't preserve whitespace as in Tcl. We could alternately mark
+    -- group-strings so that they render with {}'s during string conversion of their parent.
+    cur := lobj.child;
+    while cur /= null loop
+      if cur.tok.kind = TOK_string then
+        contains_whitespace(cur.tok.data, has_ws);
+        if has_ws then
+          groupify(cur);
+        end if;
+      end if;
+      cur := cur.succ;
+    end loop;
+    set_result(VIO, lobj, false); -- FIXME: make copy in set_result()?
+  end procedure;
+
 
 
   procedure do_cmd_llength( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
@@ -904,37 +1132,143 @@ package body vt_commands is
       end loop;
     end if;
 
-    set_return(VIO, count);
+    set_result(VIO, count);
+  end procedure;
+  
+  procedure do_cmd_lrange( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable llength, six, eix: integer;
+    variable start_node, cur : vt_parse_node_acc;
+  begin
+    expect_arg_count(args, 3, "lrange", "list first last", VIO);
+    assert_true(args.kind = VN_group, "'lrange' expecting a list", failure, VIO);
+
+    -- Get the range indices
+    arg_count(args.child, llength);
+    parse_index( args.succ, llength, six);
+    parse_index( args.succ.succ, llength, eix);
+    
+    if six < 0 then
+      six := 0;
+    end if;
+    if eix >= llength then
+      eix := llength-1;
+    end if;
+    
+    report "############################ LRANGE: " & integer'image(six) & "  " & integer'image(eix) & "  " & integer'image(llength);
+    
+    if six > eix then -- Return empty string
+      set_result(VIO);
+    else -- Return range
+      -- Remove all siblings after the end node
+      get_sibling(args.child, eix, cur);
+      free(cur.succ);
+      cur.succ := null;
+      
+      if six = 0 then -- Keep start of group
+        start_node := args.child;
+        args.child := null;
+      else -- Disconnect preceding nodes
+        get_sibling(args.child, six-1, cur);
+        start_node := cur.succ;
+        cur.succ := null;
+      end if;
+    end if;
+    
+    new_vt_parse_node(cur, VN_group);
+    cur.child := start_node;
+
+    set_result(VIO, cur, false);    
   end procedure;
 
 
-  procedure do_cmd_list( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
-    variable lobj, cur : vt_parse_node_acc;
-    variable has_ws : boolean;
+
+
+  procedure do_cmd_lset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable lvar : scope_var_acc;
+    variable lobj, cur, value, start_ix, end_ix, selected_list : vt_parse_node_acc;
+    variable count : natural;
+    variable ix : integer;
   begin
-    if args = null then
-      set_return(VIO);
+    assert_true(args /= null, "'lset' Missing varName argument", failure, VIO);
+
+    get_variable(VIO, args.tok.data.all, lvar);
+    
+    assert_true(lvar /= null, "'lset' can't read '" & args.tok.data.all & "': no such variable", failure, VIO);
+
+    lobj := lvar.var.value;
+
+    -- Look for index args
+    arg_count(args.succ, count);
+    assert_true(count > 0, "wrong # args: should be 'lset listVar ?index? ?index...? value'", failure, VIO);
+
+    if count = 1 or (count = 2 and args.succ.kind = VN_group and args.succ.child = null) then -- No index
+      -- Replace variable with new value
+      set_variable(VIO, args.tok.data.all, value); -- FIXME: eliminate copy
       return;
+    elsif count = 2 then -- 1 index or a grouped index
+      if args.succ.kind = VN_group then
+        start_ix := args.succ.child;
+        get_last(args.succ.child, end_ix);
+      else -- 1 index
+        start_ix := args.succ;
+        end_ix := args.succ;
+      end if;
+    else -- Multiple indices
+      -- Find first and last index
+      start_ix := args.succ;
+      get_sibling(args.succ, count-2, end_ix);
     end if;
 
-    -- Convert args into a group
-    new_vt_parse_node(lobj, VN_group);
-    copy_parse_tree(args, lobj.child);
+    -- Disconnect the value node
+    get_sibling(args.succ, count-2, cur); -- Next to last node
+    value := cur.succ;
+    cur.succ := null;
+    
+    -- Look up nested groups until the last one we're going to set
+    selected_list := lobj;
+    cur := start_ix;
+    loop
+      assert_true(selected_list.kind = VN_group, "'lset' Expecting a nested list object", failure, VIO);
 
-    -- Groupify strings containing whitespace
-    -- NOTE: This doesn't preserve whitespace as in Tcl. We could alternately mark
-    -- group-strings so that they render with {}'s during string conversion of their parent.
-    cur := lobj.child;
-    while cur /= null loop
+      -- Compute next index      
+      arg_count(selected_list.child, count);
       if cur.tok.kind = TOK_string then
-        contains_whitespace(cur.tok.data, has_ws);
-        if has_ws then
-          groupify(cur);
-        end if;
+        ix := parse_index(cur.tok.data.all, count);
+      else
+        ix := cur.tok.value;
       end if;
+      
+      exit when cur = end_ix;
+      
+      assert_true(ix >= 0 and ix < count, "'lset' index out of range: " & integer'image(ix), failure, VIO);
+      
+      -- Get nested list
+      get_sibling(selected_list.child, ix, selected_list);
+      
       cur := cur.succ;
     end loop;
-    set_return(VIO, lobj, false); -- FIXME: make copy in set_return()?
+    
+    
+    assert_true(ix >= 0 and ix <= count, "'lset' index out of range: " & integer'image(ix), failure, VIO);
+    
+    if ix = count then -- Append new value
+      get_last(selected_list.child, cur);
+      cur.succ := value;
+    else -- Replace index
+      get_sibling(selected_list.child, ix, cur);
+      free(cur.tok);
+      free(cur.child);
+      cur.tok := value.tok;
+      cur.tok.kind := value.tok.kind;
+      cur.kind := value.kind;
+      cur.child := value.child;
+      value.tok.data := null;
+      value.child := null;
+      free(value);
+    end if;
+    
+    set_result(VIO, lobj, true);
+    
   end procedure;
 
 
@@ -976,7 +1310,7 @@ package body vt_commands is
     --write_parse_tree("proc_body.txt", cbody);
 
     def_command(VIO, args.tok.data.all, CMD_proc_def, arg_defs, cbody);
-    set_return(VIO);
+    set_result(VIO);
   end procedure;
 
 
@@ -989,7 +1323,7 @@ package body vt_commands is
     report msg.all severity note;
     deallocate(msg);
 
-    set_return(VIO);
+    set_result(VIO);
   end procedure;
 
 
@@ -1001,10 +1335,10 @@ package body vt_commands is
     --report "DBG: return cmd node id: " & integer'image(args.id);
     cur := args;
     if cur /= null then
-      set_return(VIO, cur);
+      set_result(VIO, cur);
       report "DBG: return cmd: set return value";
     else -- Return empty string
-      set_return(VIO);
+      set_result(VIO);
     end if;
 
     -- We want to exit the current scope if it is not the global scope
@@ -1030,15 +1364,15 @@ package body vt_commands is
     if args.succ /= null then -- Got optional value: We need to set the variable
       assert_true(args.succ.succ = null, "'set' Wrong # args", failure, VIO);
       set_variable(VIO, args.tok.data.all, args.succ);
-      --set_return(VIO, args.succ);
+      --set_result(VIO, args.succ);
       get_variable(VIO, args.tok.data.all, var);
-      set_return(VIO, var.var.value);
+      set_result(VIO, var.var.value);
     else -- Return value of variable if it exists
       get_variable(VIO, args.tok.data.all, var);
       if var /= null then
-        set_return(VIO, var.var.value);
+        set_result(VIO, var.var.value);
       else
-        set_return(VIO);
+        set_result(VIO);
         assert_true(false, "'set' Unknown variable '" & args.tok.data.all & "'",
           error, VIO);
       end if;
@@ -1110,7 +1444,7 @@ package body vt_commands is
       cur := myvar.succ;
     end loop;
 
-    set_return(VIO);
+    set_result(VIO);
   end procedure;
 
 
@@ -1133,7 +1467,7 @@ package body vt_commands is
 
     wait for delay;
     deallocate(tstr);
-    set_return(VIO);
+    set_result(VIO);
   end procedure;
 
 
@@ -1156,7 +1490,7 @@ package body vt_commands is
       push_script(VIO.scope, MODE_LOOP, cmd_list);
 
     else -- Stop looping
-      set_return(VIO);
+      set_result(VIO);
       VIO.scope.script.script_state := MODE_NORMAL;
     end if;
   end procedure;
@@ -1168,10 +1502,10 @@ package body vt_commands is
 
     cur := args;
     if cur /= null then
-      set_return(VIO, cur);
+      set_result(VIO, cur);
       report "DBG: yield cmd: set return value";
     else -- Yield empty string
-      set_return(VIO);
+      set_result(VIO);
     end if;
 
   end procedure;

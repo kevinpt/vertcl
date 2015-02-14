@@ -62,14 +62,18 @@ package vt_interpreter_core is
     CMD_exit,
     CMD_expr,
     CMD_for,
+    CMD_foreach,
     CMD_global,
     CMD_if,
     CMD_incr,
     CMD_join,
     CMD_lappend,
     CMD_lindex,
-    CMD_llength,
+    CMD_linsert,
     CMD_list,
+    CMD_llength,
+    CMD_lrange,
+    CMD_lset,
     CMD_proc,
     CMD_puts,
     CMD_return,
@@ -119,9 +123,16 @@ package vt_interpreter_core is
 
     script_stack : script_obj_acc; -- Bottom of script stack
     script : script_obj_acc; -- Current script in this scope
+    
+    depth : natural;
 
     prev : scope_obj_acc; -- Parent scope
     succ : scope_obj_acc; -- Child scope
+  end record;
+  
+  type result_obj is record
+    value : vt_parse_node_acc;
+    is_ref : boolean; -- Indicates if return_value is a reference or an owned object
   end record;
 
   type vt_interp is record
@@ -131,10 +142,11 @@ package vt_interpreter_core is
 
     commands : command_map(0 to 255); -- Array of hashed command defs
 
-    EI : expr_interp_acc;
+    EI : expr_interp_acc;        -- Interpreter object for evaluating expressions
+    
+    recursion_limit : natural;
 
-    return_value : vt_parse_node_acc;
-    return_is_ref : boolean; -- Indicates if return_value is a reference or an owned object
+    result : result_obj;
 
     exit_code : integer;
   end record;
@@ -152,6 +164,12 @@ package vt_interpreter_core is
   procedure expect_arg_count(args : inout vt_parse_node_acc; count : natural;
     cname : string; arg_help : string; VIO : inout vt_interp_acc);
 
+  -- // Get the last node in a chain of siblings
+  procedure get_last(node : inout vt_parse_node_acc; last : inout vt_parse_node_acc);
+
+  -- // Get the sibling at "offset" position after "node". The offset must be less than the number of elements
+  procedure get_sibling(node : inout vt_parse_node_acc; offset : in natural; sibling : inout vt_parse_node_acc);
+
   procedure convert_to_commands(cbody : inout vt_parse_node_acc);
   
   procedure groupify(node : inout vt_parse_node_acc);
@@ -167,10 +185,10 @@ package vt_interpreter_core is
 
 
   procedure set_variable( scope : inout scope_obj_acc; variable name : string;
-    variable value : vt_parse_node_acc; make_copy : boolean := true );
+    variable value : vt_parse_node_acc; make_copy : boolean := true; copy_siblings : boolean := true );
 
   procedure set_variable( VIO : inout vt_interp_acc; variable name : string;
-    variable value : vt_parse_node_acc; make_copy : boolean := true );
+    variable value : vt_parse_node_acc; make_copy : boolean := true; copy_siblings : boolean := true );
 
   procedure set_variable( VIO : inout vt_interp_acc; variable name : string;
     variable value : integer);
@@ -181,9 +199,9 @@ package vt_interpreter_core is
 
   procedure link_variable( VIO : inout vt_interp_acc; name : in string; other_var : inout scope_var_acc );
 
-  procedure set_return( VIO : inout vt_interp_acc; variable rval : vt_parse_node_acc := null;
+  procedure set_result( VIO : inout vt_interp_acc; variable rval : vt_parse_node_acc := null;
     is_ref : boolean := true );
-  procedure set_return( VIO : inout vt_interp_acc; value : integer );
+  procedure set_result( VIO : inout vt_interp_acc; value : integer );
 
   procedure push_scope( variable VIO : inout vt_interp_acc );
   procedure pop_scope( variable VIO : inout vt_interp_acc );
@@ -427,6 +445,41 @@ package body vt_interpreter_core is
   end procedure;
 
 
+  -- // Get the last node in a chain of siblings
+  procedure get_last(node : inout vt_parse_node_acc; last : inout vt_parse_node_acc) is
+    variable cur : vt_parse_node_acc;
+  begin
+    cur := node;
+    while cur /= null loop
+      if cur.succ = null then
+        last := cur;
+        exit;
+      end if;
+      cur := cur.succ;
+    end loop;
+  end procedure;
+
+  -- // Get the sibling at "offset" position after "node". The offset must be less than the number of elements
+  procedure get_sibling(node : inout vt_parse_node_acc; offset : in natural; sibling : inout vt_parse_node_acc) is
+    variable cur : vt_parse_node_acc;
+    variable i : integer;
+  begin
+    cur := node;
+    i := 0;
+    while cur /= null loop
+      if i = offset then
+        sibling := cur;
+        return;
+      end if;
+      cur := cur.succ;
+      i := i + 1;
+    end loop;
+    
+    report "get_sibling: offset is to high" severity failure;
+  end procedure;
+
+
+
   procedure convert_to_commands(cbody : inout vt_parse_node_acc) is
     variable cur, cmd, last_arg : vt_parse_node_acc;
     variable in_cmd : boolean := false;
@@ -488,8 +541,31 @@ package body vt_interpreter_core is
 --////////////////////////////
 
   -- ## Convert a node into a group object
-  -- #  This will split strings containing whitespace into separate group elements
+  -- #  This will reparse a node's text representation
   procedure groupify(node : inout vt_parse_node_acc) is
+    variable script : unbounded_string;
+    variable parse_tree : vt_parse_node_acc;
+  begin
+    to_unbounded_string(node, script, false);
+    report "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ GROUPIFY: >" & script.all & "<";
+    parse_vertcl_string(script, parse_tree);
+    --SU.free(script);
+    
+    --assert_true(parse_tree /= null, "Unable to groupify tree", failure);
+    assert parse_tree /= null report "Unable to groupify tree" severity failure;
+
+    free(node.tok);
+    node.tok.kind := TOK_group_begin;
+    node.kind := VN_group;
+    node.child := parse_tree;
+    
+    write_parse_tree("group_tree.txt", node);
+    
+  end procedure;
+
+  -- ## Convert a node into a group object
+  -- #  This will split strings containing whitespace into separate group elements
+  procedure xxgroupify(node : inout vt_parse_node_acc) is
     variable first_child, last_child, new_word : vt_parse_node_acc;
     variable first_break, word_start : natural;
     variable at_break : boolean := true;
@@ -615,7 +691,7 @@ package body vt_interpreter_core is
 
 
   procedure set_variable( scope : inout scope_obj_acc; variable name : string;
-    variable value : vt_parse_node_acc; make_copy : boolean := true ) is
+    variable value : vt_parse_node_acc; make_copy : boolean := true; copy_siblings : boolean := true ) is
 
     variable var : scope_var_acc;
     variable tstr : unbounded_string;
@@ -642,7 +718,7 @@ package body vt_interpreter_core is
     end if;
 
     if make_copy then
-      copy_parse_tree(value, var.var.value);
+      copy_parse_tree(value, var.var.value, copy_siblings);
     else
       var.var.value := value;
     end if;
@@ -654,9 +730,9 @@ package body vt_interpreter_core is
 
   -- ## Set variable in current scope
   procedure set_variable( VIO : inout vt_interp_acc; variable name : string;
-    variable value : vt_parse_node_acc; make_copy : boolean := true ) is
+    variable value : vt_parse_node_acc; make_copy : boolean := true; copy_siblings : boolean := true ) is
   begin
-    set_variable(VIO.scope, name, value, make_copy);
+    set_variable(VIO.scope, name, value, make_copy, copy_siblings);
   end procedure;
 
   -- ## Set integer variable in current scope
@@ -703,6 +779,11 @@ package body vt_interpreter_core is
     scope := new scope_obj;
     scope.prev := VIO.scope;
     scope.succ := null;
+    
+    scope.depth := VIO.scope.depth + 1; -- Track recursive depth
+    
+    assert_true(scope.depth < VIO.recursion_limit, "Recursion limit reached: " & integer'image(VIO.recursion_limit),
+      failure, VIO);
 
     VIO.scope.succ := scope;
     VIO.scope := scope;
@@ -756,20 +837,20 @@ package body vt_interpreter_core is
     free(script);
   end procedure;
 
-  procedure set_return( VIO : inout vt_interp_acc; variable rval : vt_parse_node_acc := null;
+  procedure set_result( VIO : inout vt_interp_acc; variable rval : vt_parse_node_acc := null;
     is_ref : boolean := true ) is
 --    variable rv_copy : vt_parse_node_acc;
   begin
-    report "@@@@@@@@@@@ set_return";
-    if VIO.return_value /= null and not VIO.return_is_ref then
-      report "DBG: set_return: freeing old value: " & integer'image(VIO.return_value.id); -- %2008 DEBUG%
-      free(VIO.return_value);
+    report "@@@@@@@@@@@ set_result";
+    if VIO.result.value /= null and not VIO.result.is_ref then
+      report "DBG: set_result: freeing old value: " & integer'image(VIO.result.value.id); -- %2008 DEBUG%
+      free(VIO.result.value);
     end if;
 
     -- We defer copying the return value when it is a reference, otherwise we take
     -- ownership of an independent value node tree.
-    VIO.return_value := rval;
-    VIO.return_is_ref := is_ref;
+    VIO.result.value := rval;
+    VIO.result.is_ref := is_ref;
 
 -------------------
 --    if make_copy and rval /= null then
@@ -778,25 +859,25 @@ package body vt_interpreter_core is
 --      rv_copy := rval;
 --    end if;
 
---    if VIO.return_value /= null then
---      report "DBG: set_return: freeing old value: " & integer'image(VIO.return_value.id);
---      free(VIO.return_value);
+--    if VIO.result.value /= null then
+--      report "DBG: set_result: freeing old value: " & integer'image(VIO.result.value.id);
+--      free(VIO.result.value);
 --    end if;
 
---    VIO.return_value := rv_copy;
+--    VIO.result.value := rv_copy;
 --    if rv_copy /= null then
---      report "DBG: set_return: parse tree: " & integer'image(VIO.return_value.id);
+--      report "DBG: set_result: parse tree: " & integer'image(VIO.result.value.id);
 --    end if;
   end procedure;
 
 
-  procedure set_return( VIO : inout vt_interp_acc; value : integer ) is
+  procedure set_result( VIO : inout vt_interp_acc; value : integer ) is
     variable rval : vt_parse_node_acc;
   begin
     new_vt_parse_node(rval, VN_word);
     rval.tok.value := value;
     rval.tok.kind := TOK_integer;
-    set_return(VIO, rval, false);
+    set_result(VIO, rval, false);
   end procedure;
 
 
@@ -864,11 +945,11 @@ package body vt_interpreter_core is
     VIO.scope_stack := null;
     VIO.scope := null;
 
-    if VIO.return_value /= null and not VIO.return_is_ref then
-      report ">>>>>>>>>>>>>>>>>>>>> DBG: free interp: return val id: " & integer'image(VIO.return_value.id); -- %2008 DEBUG%
+    if VIO.result.value /= null and not VIO.result.is_ref then
+      report ">>>>>>>>>>>>>>>>>>>>> DBG: free interp: return val id: " & integer'image(VIO.result.value.id); -- %2008 DEBUG%
 
-      free(VIO.return_value);
-      VIO.return_value := null;
+      free(VIO.result.value);
+      VIO.result.value := null;
     end if;
 
     -- Release the command list
