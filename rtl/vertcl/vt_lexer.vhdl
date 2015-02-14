@@ -356,6 +356,8 @@ package body vt_lexer is
 
               when others =>
                 if char.is_digit(VLO.ch) then
+                  VLO.tstr(1) := VLO.ch;
+                  tslen := 1;
                   tval := to_number(VLO.ch);
                   lex_st := INTEGER_LIT;
 
@@ -426,6 +428,9 @@ package body vt_lexer is
             end if;
 
           when INTEGER_LIT =>
+            tslen := tslen + 1;
+            VLO.tstr(tslen) := VLO.ch;
+
             if char.is_digit(VLO.ch) then
               tval := tval*10 + to_number(VLO.ch);
               lit_chars := lit_chars + 1;
@@ -436,16 +441,22 @@ package body vt_lexer is
               lit_chars := lit_chars + 1;
             elsif (VLO.ch = 'x' or VLO.ch = 'X') and tval = 0 then -- Hex literal
               lex_st := HEX_LIT;
+              
             else -- Not part of a number
+              VLO.valid_token := true;
+              active := false;
+
               if op_char and lit_chars = 0 then -- We only saw a unary +/- previously
                 SU.copy(VLO.tstr, VLO.tok.data, tslen);
                 VLO.tok.kind := TOK_string;
-              else -- Build integer
+              elsif VLO.ch = ' ' or VLO.ch = HT or VLO.ch = ']' or VLO.ch = '}' or VLO.ch = LF then -- End of number, build an integer
                 VLO.tok.kind := TOK_integer;
                 VLO.tok.value := tval * sign;
+              else -- Non-whitespace or end quote, treat as a string
+                VLO.valid_token := false;
+                active := true;
+                lex_st := IDENTIFIER;
               end if;
-              VLO.valid_token := true;
-              active := false;
 
             end if;
 
