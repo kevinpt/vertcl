@@ -132,7 +132,7 @@ package body vt_interpreter is
   begin
 
     if node.tok.data.all'length < 2 or 
-      (node.tok.data.all'length > 1 and node.tok.data(1) /= '$') then -- This is not a variable
+      (node.tok.data.all'length > 1 and node.tok.data(node.tok.data'left) /= '$') then -- This is not a variable
       return;
     end if;
     
@@ -288,7 +288,6 @@ package body vt_interpreter is
   end procedure;
 
 
-
   procedure exec_command( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc ) is
 
     variable args : vt_parse_node_acc;
@@ -335,6 +334,7 @@ package body vt_interpreter is
       when CMD_puts =>          do_cmd_puts(VIO, args);
       when CMD_return =>        do_cmd_return(VIO, args);
       when CMD_set =>           do_cmd_set(VIO, args);
+      when CMD_string =>        do_cmd_string(VIO, args);
       when CMD_upvar =>         do_cmd_upvar(VIO, args);
       when CMD_wait =>          do_cmd_wait(VIO, args);
       when CMD_while =>         do_cmd_while(VIO, args);
@@ -680,6 +680,12 @@ package body vt_interpreter is
     for id in builtin_commands loop
       -- Strip "CMD_" prefix from id image for use as the Tcl-visible command name
       def_command(VIO, SF.delete(command_id'image(id),1,4), id);
+    end loop;
+
+    -- Build table of command ensemble subcommands
+    for id in ensemble_commands loop
+      -- Strip "ENS_" prefix from id image for use as the Tcl-visible subcommand name
+      def_ensemble(VIO, SF.delete(ensemble_id'image(id),1,4), id);
     end loop;
 
     expr_interp_init(VIO.EI);

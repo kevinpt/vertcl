@@ -78,6 +78,7 @@ package vt_interpreter_core is
     CMD_puts,
     CMD_return,
     CMD_set,
+    CMD_string,
     CMD_upvar,
     CMD_wait,
     CMD_while,
@@ -85,7 +86,6 @@ package vt_interpreter_core is
   );
 
   subtype builtin_commands is command_id range CMD_append to CMD_yield;
-
 
   type command_info;
   type command_info_acc is access command_info;
@@ -98,6 +98,41 @@ package vt_interpreter_core is
   end record;
 
   type command_map is array (natural range <>) of command_info_acc;
+
+  type ensemble_id is (
+    ENS_UNKNOWN,
+    ENS_cat,
+    ENS_compare,
+    ENS_equal,
+    ENS_first,
+    ENS_index,
+    ENS_last,
+    ENS_length,
+    ENS_map,
+    ENS_range,
+    ENS_repeat,
+    ENS_replace,
+    ENS_reverse,
+    ENS_tolower,
+    ENS_totitle,
+    ENS_toupper,
+    ENS_trim,
+    ENS_trimleft,
+    ENS_trimright
+  );
+  
+  subtype ensemble_commands is ensemble_id range ensemble_id'val(1) to ensemble_id'high;
+
+  type ensemble_info;
+  type ensemble_info_acc is access ensemble_info;
+  type ensemble_info is record
+    name : unbounded_string;
+    id   : ensemble_id;
+    succ : ensemble_info_acc;
+  end record;
+
+  type ensemble_map is array (natural range <>) of ensemble_info_acc;
+  
 
   type script_mode is (MODE_NORMAL, MODE_LOOP, MODE_SUBST);
 
@@ -140,7 +175,8 @@ package vt_interpreter_core is
     scope_stack : scope_obj_acc; -- Bottom of scope stack
     scope : scope_obj_acc;       -- Current scope; Top of stack
 
-    commands : command_map(0 to 255); -- Array of hashed command defs
+    commands  : command_map(0 to 255); -- Array of hashed command defs
+    ensembles : ensemble_map(0 to 64); -- Array of hashed ensemble sub-commands
 
     EI : expr_interp_acc;        -- Interpreter object for evaluating expressions
     
@@ -164,19 +200,26 @@ package vt_interpreter_core is
   procedure expect_arg_count(args : inout vt_parse_node_acc; count : natural;
     cname : string; arg_help : string; VIO : inout vt_interp_acc);
 
-  -- // Get the last node in a chain of siblings
+  -- ## Get the last node in a chain of siblings
   procedure get_last(node : inout vt_parse_node_acc; last : inout vt_parse_node_acc);
 
-  -- // Get the sibling at "offset" position after "node". The offset must be less than the number of elements
-  procedure get_sibling(node : inout vt_parse_node_acc; offset : in natural; sibling : inout vt_parse_node_acc);
+  -- ## Get the element at "offset" position after "node". Returns null node if offset is >= length
+  procedure get_element(node : inout vt_parse_node_acc; offset : in natural; element : inout vt_parse_node_acc);
 
   procedure convert_to_commands(cbody : inout vt_parse_node_acc);
-  
+
+  -- ## Convert a node into a string object
+  procedure stringify( node : inout vt_parse_node_acc );
+
   procedure groupify(node : inout vt_parse_node_acc);
 
   procedure def_command( VIO : inout vt_interp_acc; name : in string; id : in command_id;
     variable arg_defs : vt_parse_node_acc := null; variable cbody : vt_parse_node_acc := null );
+    
+  procedure def_ensemble( VIO : inout vt_interp_acc; name : in string; id : in ensemble_id );
 
+  procedure get_ensemble( VIO : inout vt_interp_acc; name : in string; id : out ensemble_id );
+  
   procedure get_variable( VIO : inout vt_interp_acc;
     name : in string; var : out scope_var_acc );
 
@@ -202,6 +245,7 @@ package vt_interpreter_core is
   procedure set_result( VIO : inout vt_interp_acc; variable rval : vt_parse_node_acc := null;
     is_ref : boolean := true );
   procedure set_result( VIO : inout vt_interp_acc; value : integer );
+  procedure set_result( VIO : inout vt_interp_acc; value : character );
 
   procedure push_scope( variable VIO : inout vt_interp_acc );
   procedure pop_scope( variable VIO : inout vt_interp_acc );
@@ -421,6 +465,39 @@ package body vt_interpreter_core is
     VIO.commands(h) := cmd;
   end procedure;
 
+  procedure def_ensemble( VIO : inout vt_interp_acc; name : in string; id : in ensemble_id ) is
+
+    variable e : ensemble_info_acc;
+    constant h : natural := SF.hash(name) mod VIO.ensembles'length;
+  begin
+    e := new ensemble_info;
+    e.name := new string'(name);
+    e.id := id;
+
+    e.succ := VIO.ensembles(h);
+    VIO.ensembles(h) := e;
+  end procedure;
+
+
+  procedure get_ensemble( VIO : inout vt_interp_acc; name : in string; id : out ensemble_id ) is
+    variable cur_ens : ensemble_info_acc;
+
+    constant h : natural := SF.hash(name) mod VIO.ensembles'length;
+  begin
+    -- Lookup the ensemble ID
+    cur_ens := VIO.ensembles(h);
+    while cur_ens /= null loop
+      exit when cur_ens.name.all = name;
+      cur_ens := cur_ens.succ;
+    end loop;
+
+    if cur_ens /= null then
+      id := cur_ens.id;
+    else
+      id := ENS_UNKNOWN;
+    end if;
+  end procedure;
+
 
   procedure arg_count( args : inout vt_parse_node_acc; count : out natural ) is
     variable cur : vt_parse_node_acc;
@@ -459,8 +536,8 @@ package body vt_interpreter_core is
     end loop;
   end procedure;
 
-  -- // Get the sibling at "offset" position after "node". The offset must be less than the number of elements
-  procedure get_sibling(node : inout vt_parse_node_acc; offset : in natural; sibling : inout vt_parse_node_acc) is
+  -- // Get the element at "offset" position after "node". Returns null node if offset is >= length
+  procedure get_element(node : inout vt_parse_node_acc; offset : in natural; element : inout vt_parse_node_acc) is
     variable cur : vt_parse_node_acc;
     variable i : integer;
   begin
@@ -468,14 +545,14 @@ package body vt_interpreter_core is
     i := 0;
     while cur /= null loop
       if i = offset then
-        sibling := cur;
+        element := cur;
         return;
       end if;
       cur := cur.succ;
       i := i + 1;
     end loop;
     
-    report "get_sibling: offset is to high" severity failure;
+    element := null;
   end procedure;
 
 
@@ -539,6 +616,26 @@ package body vt_interpreter_core is
 
 
 --////////////////////////////
+
+  -- ## Convert a node into a string object
+  procedure stringify( node : inout vt_parse_node_acc ) is
+    variable img : unbounded_string;
+  begin
+    if node.tok.kind /= TOK_string then
+      if node.kind = VN_group then
+        to_unbounded_string(node.child, img);
+      else -- Numeric value
+        to_unbounded_string(node, img, false);
+      end if;
+
+      node.tok.data := img;
+      node.tok.kind := TOK_string;
+      node.kind := VN_word;
+      free(node.child);
+      node.child := null;
+    end if;
+  end procedure;
+
 
   -- ## Convert a node into a group object
   -- #  This will reparse a node's text representation
@@ -880,6 +977,16 @@ package body vt_interpreter_core is
     set_result(VIO, rval, false);
   end procedure;
 
+  procedure set_result( VIO : inout vt_interp_acc; value : character ) is
+    variable rval : vt_parse_node_acc;
+  begin
+    new_vt_parse_node(rval, VN_word);
+    rval.tok.data := new string(1 to 1);
+    rval.tok.data(1) := value;
+    rval.tok.kind := TOK_string;
+    set_result(VIO, rval, false);
+  end procedure;
+
 
   procedure free( var : inout variable_rec_acc ) is
   begin
@@ -934,6 +1041,7 @@ package body vt_interpreter_core is
   procedure free( VIO : inout vt_interp_acc ) is
     variable cur_scope, succ_scope : scope_obj_acc;
     variable cur_cmd, succ_cmd : command_info_acc;
+    variable cur_ens, succ_ens : ensemble_info_acc;
   begin
     -- Release all scopes
     cur_scope := VIO.scope_stack;
@@ -961,6 +1069,16 @@ package body vt_interpreter_core is
         free(cur_cmd.arg_defs);
         free(cur_cmd.cbody);
         cur_cmd := succ_cmd;
+      end loop;
+    end loop;
+    
+    -- Release the ensemble list
+    for i in VIO.ensembles'range loop
+      cur_ens := VIO.ensembles(i);
+      while cur_ens /= null loop
+        succ_ens := cur_ens.succ;
+        free(cur_ens.name);
+        cur_ens := succ_ens;
       end loop;
     end loop;
 
