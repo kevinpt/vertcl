@@ -441,20 +441,21 @@ package body vt_lexer is
               lit_chars := lit_chars + 1;
             elsif (VLO.ch = 'x' or VLO.ch = 'X') and tval = 0 then -- Hex literal
               lex_st := HEX_LIT;
-              
-            else -- Not part of a number
-              VLO.valid_token := true;
-              active := false;
 
-              if op_char and lit_chars = 0 then -- We only saw a unary +/- previously
-                SU.copy(VLO.tstr, VLO.tok.data, tslen);
-                VLO.tok.kind := TOK_string;
-              elsif VLO.ch = ' ' or VLO.ch = HT or VLO.ch = ']' or VLO.ch = '}' or VLO.ch = LF then -- End of number, build an integer
-                VLO.tok.kind := TOK_integer;
-                VLO.tok.value := tval * sign;
-              else -- Non-whitespace or end quote, treat as a string
-                VLO.valid_token := false;
-                active := true;
+            else -- Not part of a number
+              
+              if VLO.ch = ' ' or VLO.ch = HT or VLO.ch = ']' or VLO.ch = '}' or VLO.ch = LF then -- End of number, build an integer
+                if op_char and lit_chars = 0 then -- We only saw a unary +/- previously, treat as a string
+                  SU.copy(VLO.tstr, VLO.tok.data, tslen-1);
+                  VLO.tok.kind := TOK_string;
+                else
+                  VLO.tok.kind := TOK_integer;
+                  VLO.tok.value := tval * sign;
+                end if;
+                
+                VLO.valid_token := true;
+                active := false;
+              else -- Non-whitespace or end quote, treat as a string and keep lexing
                 lex_st := IDENTIFIER;
               end if;
 
