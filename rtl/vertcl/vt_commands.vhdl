@@ -33,7 +33,7 @@
 --  exit     DONE
 --  expr     partial
 --  for      DONE
---  foreach  partial
+--  foreach  DONE
 --  ??format
 --  global   DONE
 --  if       DONE
@@ -63,24 +63,24 @@
 --  source
 --  split
 --  string:
---    cat
---    compare
---    equal
---    first
---    index
---    last
---    length
+--    cat       DONE
+--    compare   DONE
+--    equal     DONE
+--    first     DONE
+--    index     DONE
+--    last      DONE
+--    length    DONE
 --    map
---    range
---    repeat
---    replace
---    reverse
---    tolower
---    totitle
---    toupper
---    trim
---    trimleft
---    trimright
+--    range     DONE
+--    repeat    DONE
+--    replace   DONE
+--    reverse   DONE
+--    tolower   DONE
+--    totitle   DONE
+--    toupper   DONE
+--    trim      DONE
+--    trimleft  DONE
+--    trimright DONE
 --  subst
 --  switch
 --  ??tailcall
@@ -120,6 +120,7 @@ package vt_commands is
   procedure do_cmd_puts( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_set(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_wait( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_while( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -131,6 +132,7 @@ end package;
 library extras;
 use extras.strings_unbounded.unbounded_string;
 use extras.strings;
+use extras.strings_maps_constants.all;
 
 library vertcl;
 use vertcl.vt_lexer.all;
@@ -168,21 +170,23 @@ package body vt_commands is
   end procedure;
 
   -- FIXME: move to core
-  procedure stringify( node : inout vt_parse_node_acc ) is
-    variable img : unbounded_string;
-  begin
-    if node.kind = VN_group then
-      to_unbounded_string(node.child, img);
-    else -- Numeric value
-      to_unbounded_string(node, img, false);
-    end if;
+--  procedure stringify( node : inout vt_parse_node_acc ) is
+--    variable img : unbounded_string;
+--  begin
+--    if node.tok.kind /= TOK_string then
+--      if node.kind = VN_group then
+--        to_unbounded_string(node.child, img);
+--      else -- Numeric value
+--        to_unbounded_string(node, img, false);
+--      end if;
 
-    node.tok.data := img;
-    node.tok.kind := TOK_string;
-    node.kind := VN_word;
-    free(node.child);
-    node.child := null;
-  end procedure;
+--      node.tok.data := img;
+--      node.tok.kind := TOK_string;
+--      node.kind := VN_word;
+--      free(node.child);
+--      node.child := null;
+--    end if;
+--  end procedure;
 
 -- ////////////////////////////
 
@@ -205,9 +209,7 @@ package body vt_commands is
     vobj := var.var.value;
 
     -- Convert non-strings before appending
-    if vobj.tok.kind /= TOK_string then
-      stringify(vobj);
-    end if;
+    stringify(vobj);
 
     cur_arg := args.succ;
     while cur_arg /= null loop
@@ -244,7 +246,7 @@ package body vt_commands is
       set_result(VIO);
       return;
     end if;
-
+    
     -- FIXME: trim leading and trailing whitespace from strings
 
     if args.kind /= VN_group and args.tok.kind /= TOK_string then -- Convert first arg to a group
@@ -260,13 +262,14 @@ package body vt_commands is
     if args.kind = VN_group then -- Concatenate to a group object
       lobj := args;
 
-      ltail := lobj.child; -- Find the end of the first group list
-      while ltail /= null loop
-        if ltail.succ = null then
-          exit;
-        end if;
-        ltail := ltail.succ;
-      end loop;
+--      ltail := lobj.child; -- Find the end of the first group list
+--      while ltail /= null loop
+--        if ltail.succ = null then
+--          exit;
+--        end if;
+--        ltail := ltail.succ;
+--      end loop;
+      get_last(lobj.child, ltail);
 
       -- Make remaining args siblings following the list tail
       if ltail /= null then
@@ -322,11 +325,12 @@ package body vt_commands is
             cur.tok := cur.child.tok;
             
             -- Find end of group list
-            ltail := cur.child;
-            while ltail /= null loop
-              if ltail.succ = null then exit; end if;
-              ltail := ltail.succ;
-            end loop;
+--            ltail := cur.child;
+--            while ltail /= null loop
+--              if ltail.succ = null then exit; end if;
+--              ltail := ltail.succ;
+--            end loop;
+            get_last(cur.child, ltail);
 
             if ltail /= cur.child then -- More than one child
               ltail.succ := cur.succ;
@@ -398,10 +402,10 @@ package body vt_commands is
     else -- This shouldn't happen
       assert_true(false, "Unsupported argument to 'concat'", failure, VIO);
     end if;
-
+    
     -- Disconnect the modified args list from its parent command so we can use
     -- it as the return value without copying
-    VIO.scope.script.cur_cmd.child := null;
+    VIO.scope.script.cur_cmd.child.succ := null;
     set_result(VIO, lobj, false);
   end procedure;
 
@@ -423,6 +427,7 @@ package body vt_commands is
   end procedure;
 
 
+-- FIXME: merge with stringify() ?
   procedure stringify_expr(args : inout vt_parse_node_acc; estr : inout unbounded_string;
     follow_siblings : in boolean ) is
     variable cur : vt_parse_node_acc;
@@ -597,22 +602,38 @@ package body vt_commands is
   constant FOREACH_IX_OFFSET : integer := -100000;
 
   procedure do_cmd_foreach( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
-    variable a_list, a_body, next_val, cmd_list : vt_parse_node_acc;
-    variable ix, llength : integer;
+    variable lcount : natural;
+    variable a_var, a_list, a_body, next_val, cmd_list : vt_parse_node_acc;
+    variable i, ix, len, llength : integer;
   begin
     assert_true(args /= null and args.tok.kind = TOK_string, "'foreach' expecting variable name", failure, VIO);
+
+    -- Determine number of lists    
+    arg_count(args.succ, lcount);
+    assert_true(lcount/2 >= 1 and (lcount/2)*2 = lcount, "'foreach' missing varname list", failure, VIO);
+    lcount := lcount / 2;
     
-    -- FIXME: Handle multiple lists
+    -- Get the length of the longest list
+    i := 0;
+    llength := 0;
+    a_list := args.succ;
+    loop
+      assert_true(a_list.kind = VN_group, "'foreach' expecting list", failure, VIO);
+      arg_count(a_list.child, len);
+      if len > llength then
+        llength := len;
+      end if;
+      i := i + 1;
+      exit when i = lcount;
+      a_list := a_list.succ.succ;
+    end loop;
     
-    a_list := args.succ; -- FIXME: validate args exist
     a_body := a_list.succ;
-    
-    assert_true(a_list.kind = VN_group, "'foreach' expecting list", failure, VIO);
-    arg_count(a_list.child, llength);
-    
-    if a_body.tok.value < 0 then -- resuming from previous iteration
+
+    -- Determine iteration index    
+    if a_body.tok.value < 0 then -- Resuming from previous iteration
       ix := a_body.tok.value - FOREACH_IX_OFFSET + 1;
-    else
+    else -- First iteration
       ix := 0;
     end if;
 
@@ -621,12 +642,28 @@ package body vt_commands is
       VIO.scope.script.script_state := MODE_NORMAL;
       a_body.tok.value := 0;
     else -- Execute next code body
-      report "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ FOREACH: " & integer'image(ix);
+      --report "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ FOREACH: " & integer'image(ix);
 
-      get_sibling(a_list.child, ix, next_val);
-      set_variable(VIO, args.tok.data.all, next_val, true, false);
-    
-    
+      -- Set all of the list variables
+      i := 0;
+      a_var := args;
+      loop
+        a_list := a_var.succ;
+        get_element(a_list.child, ix, next_val);
+        if next_val /= null then
+          set_variable(VIO, a_var.tok.data.all, next_val, true, false);
+        else -- Set to empty string
+          new_vt_parse_node(next_val, VN_word);
+          next_val.tok.kind := TOK_string;
+          SU.initialize(next_val.tok.data);
+          set_variable(VIO, a_var.tok.data.all, next_val, false);
+        end if;
+        
+        i := i + 1;
+        exit when i = lcount;
+        a_var := a_list.succ;
+      end loop;
+      
       assert_true(a_body.kind = VN_group, "'foreach' Expecting group for code body", failure, VIO);
       copy_parse_tree(a_body, cmd_list);
       convert_to_commands(cmd_list);
@@ -873,14 +910,8 @@ package body vt_commands is
       copy_parse_tree(args.succ, append); -- Copy all remaining arguments
 
       if lobj.child /= null then
-        cur := lobj.child;
-        while cur /= null loop
-          if cur.succ = null then -- At end of list
-            cur.succ := append;
-            exit;
-          end if;
-          cur := cur.succ;
-        end loop;
+        get_last(lobj.child, cur);
+        cur.succ := append;
       else -- No children
         lobj.child := append;
       end if;
@@ -987,7 +1018,7 @@ package body vt_commands is
         assert_true(ix >= 0 and ix < count, "'lindex' index out of range: " & integer'image(ix), failure, VIO);
        
         -- Get nested list
-        get_sibling(selected_list.child, ix, selected_list);
+        get_element(selected_list.child, ix, selected_list);
         
         exit when cur = end_ix;
         
@@ -1037,17 +1068,9 @@ package body vt_commands is
     
     if index_expr.succ /= null then -- There are elements to insert
       
-      -- Find the node to insert after
-      cur := new_list.child;
-      i := 1;
-      while cur /= null loop
-        exit when i = index;
-        i := i + 1;
-        cur := cur.succ;
-      end loop;
-      insert_point := cur;
-
       if index > 0 then
+        -- Find the node to insert after
+        get_element(new_list.child, index-1, insert_point);
         succ := insert_point.succ;
         insert_point.succ := index_expr.succ;
         
@@ -1057,14 +1080,8 @@ package body vt_commands is
       end if;
       
       -- Find end of new elements
-      cur := index_expr.succ;
-      while cur /= null loop
-        if cur.succ = null then
-          cur.succ := succ;
-          exit;      
-        end if;
-        cur := cur.succ;
-      end loop;
+      get_last(index_expr.succ, cur);
+      cur.succ := succ;
       
       -- Disconnect list elements from arg list    
       index_expr.succ := null;
@@ -1160,7 +1177,7 @@ package body vt_commands is
       set_result(VIO);
     else -- Return range
       -- Remove all siblings after the end node
-      get_sibling(args.child, eix, cur);
+      get_element(args.child, eix, cur);
       free(cur.succ);
       cur.succ := null;
       
@@ -1168,7 +1185,7 @@ package body vt_commands is
         start_node := args.child;
         args.child := null;
       else -- Disconnect preceding nodes
-        get_sibling(args.child, six-1, cur);
+        get_element(args.child, six-1, cur);
         start_node := cur.succ;
         cur.succ := null;
       end if;
@@ -1216,11 +1233,11 @@ package body vt_commands is
     else -- Multiple indices
       -- Find first and last index
       start_ix := args.succ;
-      get_sibling(args.succ, count-2, end_ix);
+      get_element(args.succ, count-2, end_ix);
     end if;
 
     -- Disconnect the value node
-    get_sibling(args.succ, count-2, cur); -- Next to last node
+    get_element(args.succ, count-2, cur); -- Next to last node
     value := cur.succ;
     cur.succ := null;
     
@@ -1243,7 +1260,7 @@ package body vt_commands is
       assert_true(ix >= 0 and ix < count, "'lset' index out of range: " & integer'image(ix), failure, VIO);
       
       -- Get nested list
-      get_sibling(selected_list.child, ix, selected_list);
+      get_element(selected_list.child, ix, selected_list);
       
       cur := cur.succ;
     end loop;
@@ -1255,7 +1272,7 @@ package body vt_commands is
       get_last(selected_list.child, cur);
       cur.succ := value;
     else -- Replace index
-      get_sibling(selected_list.child, ix, cur);
+      get_element(selected_list.child, ix, cur);
       free(cur.tok);
       free(cur.child);
       cur.tok := value.tok;
@@ -1380,6 +1397,363 @@ package body vt_commands is
 
   end procedure;
 
+  use extras.strings_maps.all;
+
+  procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+    variable id : ensemble_id;
+    variable return_string : boolean := false;
+    variable a_string, cur, str2 : vt_parse_node_acc;
+    variable lset, rset : character_set;
+    variable ix, ix2 : integer;
+    variable tstr : unbounded_string;
+    variable parsing_opts, nocase_opt : boolean;
+    variable length_opt : integer;
+  begin
+    assert_true(args /= null and args.tok.kind = TOK_string, "'string' expecting subcommand", failure, VIO);
+    
+    -- Lookup subcommand
+    get_ensemble(VIO, args.tok.data.all, id);
+
+    a_string := args.succ;
+        
+    case id is
+      when ENS_cat =>
+        if a_string /= null then
+          cur := a_string;
+          while cur /= null loop
+            stringify(cur);
+            cur := cur.succ;
+          end loop;
+          
+          -- Concat args
+          cur := a_string.succ;
+          while cur /= null loop
+            SU.append(a_string.tok.data, cur.tok.data);
+            cur := cur.succ;
+          end loop;
+          
+          return_string := true;
+        
+        else -- Return empty string
+          set_result(VIO);
+          return;
+        end if;
+      when others =>
+        null;
+    end case;
+    
+
+    assert_true(a_string /= null, "'string' missing string arg", failure, VIO);
+    stringify(a_string);
+    
+    case id is
+      when ENS_compare | ENS_equal =>
+        parsing_opts := true;
+        nocase_opt := false;
+        length_opt := -1;
+        -- Look for options
+        cur := args.succ;
+
+        while cur /= null loop
+          exit when cur.tok.kind /= TOK_string or cur.tok.data(1) /= '-';
+          
+          if cur.tok.data.all = "-nocase" then
+            nocase_opt := true;
+          elsif cur.tok.data.all = "-length" then -- Get length parmaeter
+            assert_true(cur.succ /= null and cur.succ.tok.kind = TOK_integer, "'string' expecting integer length parameter", failure, VIO);
+            length_opt := cur.succ.tok.value;
+            cur := cur.succ;
+          end if;
+        
+          cur := cur.succ;
+        end loop;
+        
+        report "@@@@@@@@@@@@@@@@@@@@ COMPARE OPTS: " & cur.tok.data.all;
+        
+        -- cur points to string1
+        assert_true(cur.succ /= null, "'string' missing second string to compare against", failure, VIO);
+        str2 := cur.succ; -- str2 points to string2
+        stringify(str2);
+        
+        if nocase_opt then -- Convert to lower case for case insensitive compare
+          SU.translate(cur.tok.data, LOWER_CASE_MAP);
+          SU.translate(str2.tok.data, LOWER_CASE_MAP);
+        end if;
+        
+       
+        -- Get length of shortest string
+        ix := cur.tok.data'length;
+        if str2.tok.data'length < ix then
+          ix := str2.tok.data'length;
+        end if;
+        
+        ix2 := ix;
+        if length_opt >= 0 and length_opt < ix then
+          ix2 := length_opt;
+        end if;
+        
+        -- Do char by char comparison over matching lengths
+        ix := 0;
+        for i in 1 to ix2 loop
+          ix := character'pos(cur.tok.data(i)) - character'pos(str2.tok.data(i));
+          exit when ix /= 0;
+          -- Else chars were equal so keep looping
+        end loop;
+        
+        if ix = 0 then -- Compared sub-strings matched
+          ix := cur.tok.data'length;
+          ix2 := str2.tok.data'length;
+        
+          if length_opt >= 0 then
+            if ix > length_opt then
+              ix := length_opt;
+            end if;
+            if ix2 > length_opt then
+              ix2 := length_opt;
+            end if;
+          end if;
+
+          if ix = ix2 then
+            ix := 0;
+          elsif ix > ix2 then
+            ix := 1;
+          else
+            ix := -1;
+          end if;
+        end if;
+        
+        
+        case id is
+          when ENS_compare =>
+            if ix > 0 then
+              ix := 1;
+            elsif ix < 0 then
+              ix := -1;
+            end if;
+            
+          when ENS_equal =>
+            if ix /= 0 then
+              ix := 0;
+            else
+              ix := 1;
+            end if;
+          
+          when others =>
+            null;
+        end case;
+        
+        set_result(VIO, ix);
+      
+      
+      when ENS_first | ENS_last =>
+        str2 := a_string.succ;
+        assert_true(str2 /= null, "'string' missing haystackString", failure, VIO);
+        stringify(str2);
+        
+        if id = ENS_first then
+          ix := 0;
+        else
+          ix := str2.tok.data'length - 1;
+        end if;
+        
+        if str2.succ /= null then -- Get index
+          parse_index(str2.succ, str2.tok.data'length, ix);
+        end if;
+        
+        if id = ENS_first then
+          ix := SF.index(str2.tok.data.all(str2.tok.data'left + ix to str2.tok.data'right),
+            a_string.tok.data.all) - 1;
+        else
+          ix := SF.index(str2.tok.data.all(str2.tok.data'left to str2.tok.data'left + ix),
+            a_string.tok.data.all, strings.backward) - 1;
+        end if;
+        
+        set_result(VIO, ix);
+        
+      
+      when ENS_index =>
+        ix := 0;
+        assert_true(a_string.succ /= null, "'string' missing charIndex", failure, VIO);
+        parse_index(a_string.succ, a_string.tok.data'length, ix);
+        if ix < 0 or ix >= a_string.tok.data'length then
+          set_result(VIO);
+        else
+          set_result(VIO, a_string.tok.data(a_string.tok.data'left + ix));
+        end if;
+        
+
+      when ENS_length =>
+        set_result(VIO, a_string.tok.data'length);
+      
+      when ENS_map =>
+      
+      
+      when ENS_range =>
+        assert_true(a_string.succ /= null and a_string.succ.succ /= null, "'string' expecting range indices", failure, VIO);
+        parse_index(a_string.succ, a_string.tok.data'length, ix);
+        parse_index(a_string.succ.succ, a_string.tok.data'length, ix2);
+        if ix < 0 then
+          ix := 0;
+        end if;
+        if ix2 >= a_string.tok.data'length then
+          ix2 := a_string.tok.data'length-1;
+        end if;
+        
+        if ix <= ix2 then
+          tstr := new string(1 to ix2-ix+1);
+          tstr(tstr'range) := a_string.tok.data(ix+1 to ix2+1);
+          --SU.slice(a_string.tok.data, ix, ix2, tstr);
+          deallocate(a_string.tok.data);
+          a_string.tok.data := tstr;
+          return_string := true;
+        else
+          set_result(VIO);
+        end if;
+      
+      
+      when ENS_repeat =>
+        assert_true(a_string.succ /= null and a_string.succ.tok.kind = TOK_integer, "'string' invalud repeat count", failure, VIO);
+        
+        ix := a_string.succ.tok.value;
+        
+        if ix > 0 then -- FIXME: implement with "*"
+          tstr := a_string.tok.data;
+          a_string.tok.data := null;
+          for i in 1 to a_string.succ.tok.value loop
+            SU.append(a_string.tok.data, tstr);
+          end loop;
+          deallocate(tstr);
+          return_string := true;
+        else
+          set_result(VIO);
+        end if;
+      
+      
+      when ENS_replace =>
+        assert_true(a_string.succ /= null and a_string.succ.succ /= null, "'string' expecting replace indices", failure, VIO);
+        parse_index(a_string.succ, a_string.tok.data'length, ix);
+        parse_index(a_string.succ.succ, a_string.tok.data'length, ix2);
+        if ix < 0 then
+          ix := 0;
+        end if;
+        if ix2 >= a_string.tok.data'length then
+          ix2 := a_string.tok.data'length-1;
+        end if;
+        
+        if ix <= ix2 and ix < a_string.tok.data'length and ix2 >= 0 then -- Replace string
+          str2 := a_string.succ.succ.succ;
+          if str2 /= null then -- Use replacement string
+            stringify(str2);
+            SU.replace_slice(a_string.tok.data, ix+1, ix2+1, str2.tok.data.all);
+          else -- Replace with nothing
+            SU.replace_slice(a_string.tok.data, ix+1, ix2+1, "");
+          end if;
+        end if;
+
+        return_string := true;
+      
+      
+      when ENS_reverse =>
+        ix := a_string.tok.data'length;
+        tstr := new string(1 to ix);
+        for i in a_string.tok.data'range loop
+          tstr(ix-i+1) := a_string.tok.data(i);
+        end loop;
+        deallocate(a_string.tok.data);
+        a_string.tok.data := tstr;
+        return_string := true;
+        
+      when ENS_tolower | ENS_totitle | ENS_toupper =>
+        ix := 0;
+        ix2 := a_string.tok.data'length-1;
+        
+        -- Check for optional indices
+        if a_string.succ /= null then
+          parse_index(a_string.succ, a_string.tok.data'length, ix);
+          ix2 := ix;
+          if a_string.succ.succ /= null then
+            parse_index(a_string.succ.succ, a_string.tok.data'length, ix2);
+          end if;
+        end if;
+        
+        if ix < 0 then
+          ix := 0;
+        end if;
+        if ix2 >= a_string.tok.data'length then
+          ix2 := a_string.tok.data'length-1;
+        end if;
+        
+        ix := ix + 1;
+        ix2 := ix2 + 1;
+        
+        case id is
+          when ENS_tolower =>
+            SU.replace_slice(a_string.tok.data, ix, ix2, SF.translate(a_string.tok.data(ix to ix2), LOWER_CASE_MAP));
+          when ENS_toupper =>
+            SU.replace_slice(a_string.tok.data, ix, ix2, SF.translate(a_string.tok.data(ix to ix2), UPPER_CASE_MAP));
+          when ENS_totitle =>
+            if ix2 > ix then
+              -- Capitalize first char
+              SU.replace_slice(a_string.tok.data, ix, ix, SF.translate(a_string.tok.data(ix to ix), UPPER_CASE_MAP));
+              -- Lower case everything else
+              SU.replace_slice(a_string.tok.data, ix+1, ix2, SF.translate(a_string.tok.data(ix+1 to ix2), LOWER_CASE_MAP));
+            else -- Just capitalize one char
+              SU.replace_slice(a_string.tok.data, ix, ix2, SF.translate(a_string.tok.data(ix to ix2), UPPER_CASE_MAP));            
+            end if;          
+          
+          when others =>
+            null;
+        end case;
+        return_string := true;
+      
+
+      when ENS_trim =>
+        -- Get optional char list
+        if a_string.succ /= null then
+          lset := to_set(a_string.succ.tok.data.all);
+          SU.trim(a_string.tok.data, lset, lset);
+        else -- Trim whitespace
+          SU.trim(a_string.tok.data, strings.both);
+        end if;
+        return_string := true;        
+        
+      when ENS_trimleft =>
+        -- Get optional char list
+        if a_string.succ /= null then
+          lset := to_set(a_string.succ.tok.data.all);
+          rset := (others => false);
+          SU.trim(a_string.tok.data, lset, rset);
+        else -- Trim whitespace
+          SU.trim(a_string.tok.data, strings.left);
+        end if;
+        return_string := true;
+
+      when ENS_trimright =>
+        -- Get optional char list
+        if a_string.succ /= null then
+          lset := (others => false);
+          rset := to_set(a_string.succ.tok.data.all);
+          SU.trim(a_string.tok.data, lset, rset);
+        else -- Trim whitespace
+          SU.trim(a_string.tok.data, strings.right);
+        end if;
+        return_string := true;
+
+      when ENS_UNKNOWN =>
+        report "UNKNOWN subcommand: " & args.tok.data.all severity failure;
+      when others =>
+        null;
+    end case;
+    
+    if return_string then
+      -- Disconnect string arg
+      free(a_string.succ);
+      a_string.succ := null;
+      args.succ := null;
+      set_result(VIO, a_string, false);
+    end if;
+  end procedure;
+  
 
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable cur, myvar, vobj : vt_parse_node_acc;
