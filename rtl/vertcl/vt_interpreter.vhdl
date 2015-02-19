@@ -272,27 +272,33 @@ package body vt_interpreter is
 
 
 
-  procedure get_command( VIO : inout vt_interp_acc; name : in string; cmd : inout command_info_acc ) is
-    variable cur_cmd : command_info_acc;
+--  procedure get_command( VIO : inout vt_interp_acc; name : in string; cmd : inout command_info_acc ) is
+--    variable cur_cmd : command_info_acc;
 
-    constant h : natural := SF.hash(name) mod VIO.commands'length;
-  begin
-    -- Lookup the command ID
-    cur_cmd := VIO.commands(h);
-    while cur_cmd /= null loop
-      exit when cur_cmd.name.all = name;
-      cur_cmd := cur_cmd.succ;
-    end loop;
+--    constant h : natural := SF.hash(name) mod VIO.commands'length;
+--  begin
+--    -- Lookup the command ID
+--    cur_cmd := VIO.commands(h);
+--    while cur_cmd /= null loop
+--      exit when cur_cmd.name.all = name;
+--      cur_cmd := cur_cmd.succ;
+--    end loop;
 
-    cmd := cur_cmd;
-  end procedure;
+--    cmd := cur_cmd;
+--  end procedure;
+  
+  
+--  procedure handle_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc ) is
+--  begin
+--    assert_true(false, "Unknown command: " & cmd.child.tok.data.all, error, VIO);
+--  end procedure;
 
 
   procedure exec_command( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc ) is
 
     variable args : vt_parse_node_acc;
     variable cmd_def : command_info_acc;
-    variable cmd_id : command_id := CMD_UNKNOWN;
+    variable cmd_id : command_id := CMD_UNDETERMINED;
   begin
 
     -- Perform variable substitutions on command elements
@@ -332,16 +338,26 @@ package body vt_interpreter is
       when CMD_lrange =>        do_cmd_lrange(VIO, args);
       when CMD_proc =>          do_cmd_proc(VIO, args);
       when CMD_puts =>          do_cmd_puts(VIO, args);
+      when CMD_rename =>        do_cmd_rename(VIO, args);
       when CMD_return =>        do_cmd_return(VIO, args);
       when CMD_set =>           do_cmd_set(VIO, args);
       when CMD_string =>        do_cmd_string(VIO, args);
+      when CMD_unknown =>       do_cmd_unknown(VIO, args);
+      when CMD_unset =>         do_cmd_unset(VIO, args);
       when CMD_upvar =>         do_cmd_upvar(VIO, args);
       when CMD_wait =>          do_cmd_wait(VIO, args);
       when CMD_while =>         do_cmd_while(VIO, args);
       when CMD_yield =>         do_cmd_yield(VIO, args);
       when CMD_proc_def =>      exec_proc(VIO, args, cmd_def);
       when others =>
-        assert_true(false, "Unknown command: " & cmd.child.tok.data.all, error, VIO);
+        -- Lookup unknown command definition
+        get_command(VIO, "unknown", cmd_def);
+        if cmd_def.id = CMD_proc_def then
+          exec_proc(VIO, cmd.child, cmd_def);
+        else
+          do_cmd_unknown(VIO, cmd.child);
+        end if;
+        
     end case;
 
     report ">>>>>>>>> DBG: did command: " & command_id'image(cmd_id);

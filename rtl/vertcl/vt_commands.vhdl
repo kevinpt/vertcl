@@ -56,13 +56,13 @@
 --  ??parray
 --  proc     DONE
 --  puts     DONE
---  rename
+--  rename   DONE
 --  return   partial
 --  ??scan
 --  set      DONE
 --  source
 --  split
---  string:
+--  string:     DONE
 --    cat       DONE
 --    compare   DONE
 --    equal     DONE
@@ -70,7 +70,7 @@
 --    index     DONE
 --    last      DONE
 --    length    DONE
---    map
+--    map       DONE
 --    range     DONE
 --    repeat    DONE
 --    replace   DONE
@@ -84,12 +84,12 @@
 --  subst
 --  switch
 --  ??tailcall
---  unknown
---  unset
+--  unknown     DONE
+--  unset       partial
 --  ??uplevel
---  upvar    DONE
---  while    DONE
---  yield
+--  upvar       DONE
+--  while       DONE
+--  yield       DONE
 
 
 library vertcl;
@@ -118,9 +118,12 @@ package vt_commands is
   procedure do_cmd_lset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_proc( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_puts( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_rename( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_set(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc );
+  procedure do_cmd_unset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_wait( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_while( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -1344,6 +1347,29 @@ package body vt_commands is
   end procedure;
 
 
+  procedure do_cmd_rename( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable cmd_def : command_info_acc;
+  begin
+    expect_arg_count(args, 2, "rename", "oldName newName", VIO);
+    
+    stringify(args);
+    stringify(args.succ);
+    
+    -- Lookup existing command
+    get_command(VIO, args.tok.data.all, cmd_def);
+    
+    assert_true(cmd_def /= null, "can't rename """ & args.tok.data.all & """: command doesn't exist", failure, VIO);
+    
+    if args.succ.tok.data.all = "" then
+      del_command(VIO, args.tok.data.all);
+    else
+      rename_command(VIO, args.tok.data.all, args.succ.tok.data.all);
+    end if;
+    
+    set_result(VIO);
+  end procedure;
+  
+
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable cur : vt_parse_node_acc;
   begin
@@ -1418,6 +1444,7 @@ package body vt_commands is
         
     case id is
       when ENS_cat =>
+        stringify(a_string);
         if a_string /= null then
           cur := a_string;
           while cur /= null loop
@@ -1444,7 +1471,9 @@ package body vt_commands is
     
 
     assert_true(a_string /= null, "'string' missing string arg", failure, VIO);
-    stringify(a_string);
+    if id /= ENS_map then -- First arg should be a string
+      stringify(a_string);
+    end if;
     
     case id is
       when ENS_compare | ENS_equal =>
@@ -1586,7 +1615,45 @@ package body vt_commands is
         set_result(VIO, a_string.tok.data'length);
       
       when ENS_map =>
-      
+        assert_true(a_string.succ /= null, "'string' missing string parameter to map", failure, VIO);
+        a_string := a_string.succ;
+        stringify(a_string);
+        
+        assert_true(args.succ.kind = VN_group, "'string' expecting group for map command", failure, VIO);
+        arg_count(args.succ.child, ix2);
+        assert_true(ix2 / 2 * 2 = ix2, "'string' char map list unbalanced", failure, VIO);
+        
+        -- Stringify map elements
+        cur := args.succ.child;
+        while cur /= null loop
+          stringify(cur);
+          cur := cur.succ;
+        end loop;
+        
+        ix := 1; -- Current string pos
+        while ix <= a_string.tok.data'length loop
+          -- Check each mapping for a match to the current position in the string
+          cur := args.succ.child;
+          while cur /= null loop
+            if cur.tok.data'length <= a_string.tok.data'length - ix + 1 then -- Look for a match
+              if cur.tok.data.all = a_string.tok.data(ix to ix + cur.tok.data'length - 1) then
+                SU.replace_slice(a_string.tok.data, ix, ix + cur.tok.data'length - 1, cur.succ.tok.data.all);
+                ix := ix + cur.succ.tok.data'length - 1;
+                exit;
+              end if;
+            end if;
+            cur := cur.succ.succ;
+          end loop;
+          ix := ix + 1;
+        end loop;
+        
+        -- Disconnect string arg
+        free(a_string.succ);
+        a_string.succ := null;
+        args.succ.succ := null;
+        set_result(VIO, a_string, false);
+
+        
       
       when ENS_range =>
         assert_true(a_string.succ /= null and a_string.succ.succ /= null, "'string' expecting range indices", failure, VIO);
@@ -1754,6 +1821,46 @@ package body vt_commands is
     end if;
   end procedure;
   
+  
+  procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc ) is
+  begin
+    assert_true(false, "invalid command name """ & cmd.tok.data.all & """", error, VIO);
+  end procedure;
+  
+
+  procedure do_cmd_unset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable cur : vt_parse_node_acc;
+    variable nocomplain : boolean := false;
+    variable var : scope_var_acc;
+  begin
+    -- Look for options
+    cur := args;
+    while cur /= null loop
+      exit when cur.tok.kind /= TOK_string or cur.tok.data(1) /= '-';
+      
+      if cur.tok.data.all = "-nocomplain" then
+        nocomplain := true;
+      elsif cur.tok.data.all = "--" then -- End of options
+        exit;
+      end if;
+    
+      cur := cur.succ;
+    end loop;
+    
+    -- FIXME: handle arrays
+    
+    while cur /= null loop
+      get_variable(VIO, cur.tok.data.all, var);
+      assert_true(var /= null or nocomplain, "can't unset "& cur.tok.data.all &": no such variable", failure, VIO);
+      if var /= null then
+        del_variable(VIO, cur.tok.data.all);
+      end if;
+      cur := cur.succ;
+    end loop;
+
+    set_result(VIO);
+  end procedure;
+
 
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable cur, myvar, vobj : vt_parse_node_acc;

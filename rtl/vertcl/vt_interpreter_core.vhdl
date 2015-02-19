@@ -52,7 +52,7 @@ package vt_interpreter_core is
 
 
   type command_id is (
-    CMD_UNKNOWN,
+    CMD_UNDETERMINED,
     CMD_proc_def,
 
     CMD_append,
@@ -64,7 +64,7 @@ package vt_interpreter_core is
     CMD_for,
     CMD_foreach,
     CMD_global,
-    CMD_if,
+    CMd_if,
     CMD_incr,
     CMD_join,
     CMD_lappend,
@@ -76,9 +76,12 @@ package vt_interpreter_core is
     CMD_lset,
     CMD_proc,
     CMD_puts,
+    CMD_rename,
     CMD_return,
     CMD_set,
     CMD_string,
+    CMD_unknown,
+    CMD_unset,
     CMD_upvar,
     CMD_wait,
     CMD_while,
@@ -216,6 +219,10 @@ package vt_interpreter_core is
   procedure def_command( VIO : inout vt_interp_acc; name : in string; id : in command_id;
     variable arg_defs : vt_parse_node_acc := null; variable cbody : vt_parse_node_acc := null );
     
+  procedure get_command( VIO : inout vt_interp_acc; name : in string; cmd : inout command_info_acc );
+  procedure rename_command( VIO : inout vt_interp_acc; source : in string; dest : in string );
+  procedure del_command( VIO :  inout vt_interp_acc; name : in string );
+      
   procedure def_ensemble( VIO : inout vt_interp_acc; name : in string; id : in ensemble_id );
 
   procedure get_ensemble( VIO : inout vt_interp_acc; name : in string; id : out ensemble_id );
@@ -239,6 +246,7 @@ package vt_interpreter_core is
   procedure set_variable( VIO : inout vt_interp_acc; variable name : string;
     variable value : real);
 
+  procedure del_variable( VIO : inout vt_interp_acc; variable name : string );
 
   procedure link_variable( VIO : inout vt_interp_acc; name : in string; other_var : inout scope_var_acc );
 
@@ -254,6 +262,8 @@ package vt_interpreter_core is
     variable parse_tree : vt_parse_node_acc := null );
   procedure pop_script( scope : inout scope_obj_acc );
 
+  procedure free( var : inout scope_var_acc );
+  procedure free( cmd : inout command_info_acc );
   procedure free( script : inout script_obj_acc );
   procedure free( scope : inout scope_obj_acc );
   procedure free( VIO : inout vt_interp_acc );
@@ -447,7 +457,7 @@ package body vt_interpreter_core is
     deallocate(str);
     str := subst;
   end procedure;
-
+  
 
   procedure def_command( VIO : inout vt_interp_acc; name : in string; id : in command_id;
     variable arg_defs : vt_parse_node_acc := null; variable cbody : vt_parse_node_acc := null ) is
@@ -455,6 +465,7 @@ package body vt_interpreter_core is
     variable cmd : command_info_acc;
     constant h : natural := SF.hash(name) mod VIO.commands'length;
   begin
+    -- FIXME: handle redefinition of existing command
     cmd := new command_info;
     cmd.name := new string'(name);
     cmd.id := id;
@@ -464,6 +475,66 @@ package body vt_interpreter_core is
     cmd.succ := VIO.commands(h);
     VIO.commands(h) := cmd;
   end procedure;
+
+
+  procedure get_command( VIO : inout vt_interp_acc; name : in string; cmd : inout command_info_acc ) is
+    variable cur : command_info_acc;
+    constant h : natural := SF.hash(name) mod VIO.commands'length;
+  begin
+    -- Lookup the command ID
+    cur := VIO.commands(h);
+    while cur /= null loop
+      exit when cur.name.all = name;
+      cur := cur.succ;
+    end loop;
+
+    cmd := cur;
+  end procedure;
+  
+  
+  procedure rename_command( VIO : inout vt_interp_acc; source : in string; dest : in string ) is
+    variable cmd : command_info_acc;
+    constant h : natural := SF.hash(dest) mod VIO.commands'length;
+  begin
+    get_command(VIO, source, cmd);
+    if cmd /= null then
+      def_command(VIO, dest, cmd.id, cmd.arg_defs, cmd.cbody);
+      cmd.arg_defs := null;
+      cmd.cbody := null;
+      del_command(VIO, cmd.name.all);
+    end if;
+  end procedure;
+
+  
+  procedure del_command( VIO :  inout vt_interp_acc; name : in string ) is
+    variable cur, succ : command_info_acc;
+    constant h : natural := SF.hash(name) mod VIO.commands'length;
+  begin
+    -- Lookup the command ID
+    cur := VIO.commands(h);
+    if cur = null then -- Nothing to delete
+      return;
+    end if;
+    
+    if cur.name.all = name then -- At top of list
+      VIO.commands(h) := cur.succ;
+      cur.succ := null;
+      free(cur);
+    elsif cur.succ /= null then
+      while cur.succ /= null loop
+        if cur.succ.name.all = name then
+          succ := cur.succ;
+          cur.succ := succ.succ;
+          succ.succ := null;
+          free(succ);
+          exit;
+        end if;
+        cur := cur.succ;
+      end loop;
+    end if;
+
+  end procedure;
+  
 
   procedure def_ensemble( VIO : inout vt_interp_acc; name : in string; id : in ensemble_id ) is
 
@@ -853,8 +924,35 @@ package body vt_interpreter_core is
     node.tok.float := value;
     set_variable(VIO.scope, name, node, false);
   end procedure;
-
   
+
+  procedure del_variable( VIO : inout vt_interp_acc; variable name : string ) is
+    variable var, cur_var : scope_var_acc;
+    constant h : natural := SF.hash(name) mod VIO.scope.vars'length;
+  begin
+
+    get_variable(VIO.scope, name, var);
+
+    if var /= null then -- Variable exists
+      -- Find any preceding var defs in the same hash bin
+      cur_var := VIO.scope.vars(h);
+      if cur_var = var then -- Var def is at start of list
+        VIO.scope.vars(h) := cur_var.succ;
+      else
+        while cur_var /= null loop
+          exit when cur_var.succ = var;
+          cur_var := cur_var.succ;
+        end loop;
+        
+        cur_var.succ := var.succ;
+      end if;
+
+      var.succ := null;
+      free(var);
+    end if;
+    
+  end procedure;
+
 
   procedure link_variable( VIO : inout vt_interp_acc; name : in string; other_var : inout scope_var_acc ) is
     variable var : scope_var_acc;
@@ -993,13 +1091,39 @@ package body vt_interpreter_core is
     if var /= null then
       var.ref_count := var.ref_count - 1;
       if var.ref_count = 0 then
-        --free(var.name);
         free(var.value);
         deallocate(var);
       end if;
     end if;
   end procedure;
+  
+  procedure free( var : inout scope_var_acc ) is
+    variable cur_var, succ_var : scope_var_acc;
+  begin
+    cur_var := var;
+    while cur_var /= null loop
+      succ_var := cur_var.succ;
+      free(cur_var.name);
+      free(cur_var.var);
+      deallocate(cur_var);
+      cur_var := succ_var;
+    end loop;
+  end procedure;
 
+  procedure free( cmd : inout command_info_acc ) is
+    variable cur, succ : command_info_acc;
+  begin
+    cur := cmd;
+    while cur /= null loop
+      succ := cur.succ;
+      free(cur.name);
+      free(cur.arg_defs);
+      free(cur.cbody);
+      deallocate(cur);
+      cur := succ;
+    end loop;
+  end procedure;
+  
 
   procedure free( script : inout script_obj_acc ) is
   begin
@@ -1012,19 +1136,11 @@ package body vt_interpreter_core is
 
 
   procedure free( scope : inout scope_obj_acc ) is
-    variable cur_var, succ_var : scope_var_acc;
     variable cur_script, succ_script : script_obj_acc;
   begin
     -- Release the variables
     for i in scope.vars'range loop
-      cur_var := scope.vars(i);
-      while cur_var /= null loop
-        succ_var := cur_var.succ;
-        free(cur_var.var);
-        free(cur_var.name);
-        deallocate(cur_var);
-        cur_var := succ_var;
-      end loop;
+      free(scope.vars(i));
     end loop;
 
     -- Release the script stack
@@ -1040,7 +1156,7 @@ package body vt_interpreter_core is
 
   procedure free( VIO : inout vt_interp_acc ) is
     variable cur_scope, succ_scope : scope_obj_acc;
-    variable cur_cmd, succ_cmd : command_info_acc;
+    --variable cur_cmd, succ_cmd : command_info_acc;
     variable cur_ens, succ_ens : ensemble_info_acc;
   begin
     -- Release all scopes
@@ -1062,14 +1178,15 @@ package body vt_interpreter_core is
 
     -- Release the command list
     for i in VIO.commands'range loop
-      cur_cmd := VIO.commands(i);
-      while cur_cmd /= null loop
-        succ_cmd := cur_cmd.succ;
-        free(cur_cmd.name);
-        free(cur_cmd.arg_defs);
-        free(cur_cmd.cbody);
-        cur_cmd := succ_cmd;
-      end loop;
+      free(VIO.commands(i));
+--      cur_cmd := VIO.commands(i);
+--      while cur_cmd /= null loop
+--        succ_cmd := cur_cmd.succ;
+--        free(cur_cmd.name);
+--        free(cur_cmd.arg_defs);
+--        free(cur_cmd.cbody);
+--        cur_cmd := succ_cmd;
+--      end loop;
     end loop;
     
     -- Release the ensemble list
