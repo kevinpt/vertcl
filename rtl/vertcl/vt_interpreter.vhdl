@@ -344,6 +344,7 @@ package body vt_interpreter is
       when CMD_string =>        do_cmd_string(VIO, args);
       when CMD_unknown =>       do_cmd_unknown(VIO, args);
       when CMD_unset =>         do_cmd_unset(VIO, args);
+      when CMD_uplevel =>       do_cmd_uplevel(VIO, args);
       when CMD_upvar =>         do_cmd_upvar(VIO, args);
       when CMD_wait =>          do_cmd_wait(VIO, args);
       when CMD_while =>         do_cmd_while(VIO, args);
@@ -373,7 +374,7 @@ package body vt_interpreter is
     procedure complete_script is
     begin
 
-      pop_script(VIO.scope);
+      pop_script(VIO);
       cur_cmd := VIO.scope.script.cur_cmd;
       cur_arg := VIO.scope.script.cur_arg;
 

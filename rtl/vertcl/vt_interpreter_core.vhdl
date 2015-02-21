@@ -82,6 +82,7 @@ package vt_interpreter_core is
     CMD_string,
     CMD_unknown,
     CMD_unset,
+    CMD_uplevel,
     CMD_upvar,
     CMD_wait,
     CMD_while,
@@ -148,6 +149,7 @@ package vt_interpreter_core is
     cur_seg : vt_parse_node_acc;
 
     script_state : script_mode;
+    uplevel_script : boolean; -- Flag to identify script created with an uplevel command
 
     prev : script_obj_acc; -- Parent script
     succ : script_obj_acc; -- Child script
@@ -167,7 +169,16 @@ package vt_interpreter_core is
     prev : scope_obj_acc; -- Parent scope
     succ : scope_obj_acc; -- Child scope
   end record;
-  
+
+
+  type ul_scope_obj;
+  type ul_scope_obj_acc is access ul_scope_obj;
+  type ul_scope_obj is record
+    scope_stack : scope_obj_acc;
+    succ : ul_scope_obj_acc;
+  end record;
+
+
   type result_obj is record
     value : vt_parse_node_acc;
     is_ref : boolean; -- Indicates if return_value is a reference or an owned object
@@ -177,6 +188,8 @@ package vt_interpreter_core is
     active : boolean;
     scope_stack : scope_obj_acc; -- Bottom of scope stack
     scope : scope_obj_acc;       -- Current scope; Top of stack
+    
+    uplevel_scopes : ul_scope_obj_acc;
 
     commands  : command_map(0 to 255); -- Array of hashed command defs
     ensembles : ensemble_map(0 to 64); -- Array of hashed ensemble sub-commands
@@ -260,7 +273,8 @@ package vt_interpreter_core is
 
   procedure push_script( scope : inout scope_obj_acc; script_state : in script_mode;
     variable parse_tree : vt_parse_node_acc := null );
-  procedure pop_script( scope : inout scope_obj_acc );
+  procedure pop_script( VIO : inout vt_interp_acc );
+--  procedure pop_script( scope : inout scope_obj_acc );
 
   procedure free( var : inout scope_var_acc );
   procedure free( cmd : inout command_info_acc );
@@ -1004,31 +1018,58 @@ package body vt_interpreter_core is
     script := new script_obj;
     script.prev := scope.script;
     script.succ := null;
+    
+    script.uplevel_script := false;
 
     if scope.script_stack /= null then
-      scope.script.script_state := script_state;
+      scope.script.script_state := script_state; -- Set mode on higher level script
       scope.script.succ := script;
     else -- Stack is empty
       scope.script_stack := script;
     end if;
     scope.script := script;
-
+    
     script.parse_tree := parse_tree;
     script.cur_cmd := parse_tree;
   end procedure;
 
-  procedure pop_script( scope : inout scope_obj_acc ) is
+  procedure pop_script( VIO : inout vt_interp_acc ) is
     variable script : script_obj_acc;
+    variable old_scope, cur : scope_obj_acc;
+    variable ul_scope : ul_scope_obj_acc;
   begin
     report "%%%%%%%%% POP script";
-    script := scope.script;
+    script := VIO.scope.script;
     if script /= null and script.prev /= null then -- Not the top-level script
-      scope.script := scope.script.prev;
-      scope.script.succ := null;
+      VIO.scope.script := VIO.scope.script.prev;
+      VIO.scope.script.succ := null;
     else -- Top of script stack
-      scope.script_stack := null;
-      scope.script := null;
+      VIO.scope.script_stack := null;
+      VIO.scope.script := null;
     end if;
+    
+    -- Check if this was an uplevel script
+    if script.uplevel_script then -- Restore calling scope
+      report "%%%%%%%%%%%%%% FINISHED UPLEVEL SCRIPT";
+      assert_true(VIO.uplevel_scopes /= null, "Missing uplevel scope", failure, VIO);
+      ul_scope := VIO.uplevel_scopes;
+      old_scope := ul_scope.scope_stack;
+      VIO.uplevel_scopes := ul_scope.succ;
+      deallocate(ul_scope);
+      
+      -- Find top of old scope stack
+      cur := old_scope;
+      while cur /= null loop
+        exit when cur.succ = null;
+        cur := cur.succ;
+      end loop;
+
+      -- Reconnect old scope stack
+      VIO.scope.succ := old_scope;
+      old_scope.prev := VIO.scope;
+      VIO.scope := cur;
+    end if;
+    
     free(script);
   end procedure;
 
@@ -1128,6 +1169,7 @@ package body vt_interpreter_core is
   procedure free( script : inout script_obj_acc ) is
   begin
     if script /= null then
+      --assert script.parse_tree /= null report "DOUBLE FREE ERROR" severity error;
       -- Release the parse tree
       free(script.parse_tree);
       deallocate(script);
@@ -1156,8 +1198,8 @@ package body vt_interpreter_core is
 
   procedure free( VIO : inout vt_interp_acc ) is
     variable cur_scope, succ_scope : scope_obj_acc;
-    --variable cur_cmd, succ_cmd : command_info_acc;
     variable cur_ens, succ_ens : ensemble_info_acc;
+    variable cur_ul, succ_ul : ul_scope_obj_acc;
   begin
     -- Release all scopes
     cur_scope := VIO.scope_stack;
@@ -1168,10 +1210,19 @@ package body vt_interpreter_core is
     end loop;
     VIO.scope_stack := null;
     VIO.scope := null;
+    
+    -- Release any uplevel scopes that weren't restored
+    cur_ul := VIO.uplevel_scopes;
+    while cur_ul /= null loop
+      succ_ul := cur_ul.succ;
+      free(cur_ul.scope_stack);
+      deallocate(cur_ul);
+      cur_ul := succ_ul;
+    end loop;
+    VIO.uplevel_scopes := null;
+
 
     if VIO.result.value /= null and not VIO.result.is_ref then
-      report ">>>>>>>>>>>>>>>>>>>>> DBG: free interp: return val id: " & integer'image(VIO.result.value.id); -- %2008 DEBUG%
-
       free(VIO.result.value);
       VIO.result.value := null;
     end if;
@@ -1179,14 +1230,6 @@ package body vt_interpreter_core is
     -- Release the command list
     for i in VIO.commands'range loop
       free(VIO.commands(i));
---      cur_cmd := VIO.commands(i);
---      while cur_cmd /= null loop
---        succ_cmd := cur_cmd.succ;
---        free(cur_cmd.name);
---        free(cur_cmd.arg_defs);
---        free(cur_cmd.cbody);
---        cur_cmd := succ_cmd;
---      end loop;
     end loop;
     
     -- Release the ensemble list
@@ -1195,10 +1238,11 @@ package body vt_interpreter_core is
       while cur_ens /= null loop
         succ_ens := cur_ens.succ;
         free(cur_ens.name);
+        deallocate(cur_ens);
         cur_ens := succ_ens;
       end loop;
     end loop;
-
+    
     free(VIO.EI);
 
     deallocate(VIO);

@@ -22,44 +22,44 @@
 --  Commands:
 --  ---------
 --  ??after
---  append   DONE
+--  append      DONE
 --  ??array
 --  binary
---  break    DONE
---  concat   DONE
---  continue DONE
+--  break       DONE
+--  concat      DONE
+--  continue    DONE
 --  error
 --  eval
---  exit     DONE
---  expr     partial
---  for      DONE
---  foreach  DONE
+--  exit        DONE
+--  expr        partial
+--  for         DONE
+--  foreach     DONE
 --  ??format
---  global   DONE
---  if       DONE
---  incr     DONE
+--  global      DONE
+--  if          DONE
+--  incr        DONE
 --  ??info
---  join     DONE
---  lappend  DONE
---  lindex   DONE
---  linsert  DONE
---  list     DONE
---  llength  partial
---  lrange   DONE
+--  join        DONE
+--  lappend     DONE
+--  lindex      DONE
+--  linsert     DONE
+--  list        DONE
+--  llength     partial
+--  lrange      DONE
 --  lrepeat
 --  lreplace
 --  lreverse
 --  lsearch
---  lset     DONE
+--  lset        DONE
 --  ??lsort
 --  ??package
 --  ??parray
---  proc     DONE
---  puts     DONE
---  rename   DONE
---  return   partial
+--  proc        DONE
+--  puts        DONE
+--  rename      DONE
+--  return      partial
 --  ??scan
---  set      DONE
+--  set         DONE
 --  source
 --  split
 --  string:     DONE
@@ -86,7 +86,7 @@
 --  ??tailcall
 --  unknown     DONE
 --  unset       partial
---  ??uplevel
+--  uplevel     DONE
 --  upvar       DONE
 --  while       DONE
 --  yield       DONE
@@ -124,6 +124,7 @@ package vt_commands is
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc );
   procedure do_cmd_unset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_uplevel( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_wait( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_while( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -229,7 +230,7 @@ package body vt_commands is
   begin
     -- Unwind the script stack until we find one with active looping or reach the bottom
     while VIO.scope.script.script_state /= MODE_LOOP and VIO.scope.script.prev /= null loop
-      pop_script(VIO.scope);
+      pop_script(VIO);
     end loop;
 
     if VIO.scope.script.script_state = MODE_LOOP then
@@ -240,19 +241,13 @@ package body vt_commands is
   end procedure;
 
 
-  procedure do_cmd_concat( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+  procedure concat_args(args : inout vt_parse_node_acc; force_group : boolean := false) is
     variable lobj, ltail, cur, prev, node_child : vt_parse_node_acc;
     variable was_true : boolean;
     variable img : unbounded_string;
   begin
-    if args = null then -- Return empty string
-      set_result(VIO);
-      return;
-    end if;
-    
-    -- FIXME: trim leading and trailing whitespace from strings
-
-    if args.kind /= VN_group and args.tok.kind /= TOK_string then -- Convert first arg to a group
+    if args.kind /= VN_group and (force_group or args.tok.kind /= TOK_string) then -- Convert first arg to a group
+      -- FIXME: properly groupify strings with whitespace
       new_vt_parse_node(lobj, args.kind);
       lobj.tok := args.tok;
       lobj.child := args.child;
@@ -262,16 +257,22 @@ package body vt_commands is
       args.child := lobj;
     end if;
 
+    
+    -- FIXME: trim leading and trailing whitespace from strings
+
+--    if args.kind /= VN_group and args.tok.kind /= TOK_string then -- Convert first arg to a group
+--      new_vt_parse_node(lobj, args.kind);
+--      lobj.tok := args.tok;
+--      lobj.child := args.child;
+--      args.tok.kind := TOK_group_begin;
+--      args.tok.data := null;
+--      args.kind := VN_group;
+--      args.child := lobj;
+--    end if;
+
     if args.kind = VN_group then -- Concatenate to a group object
       lobj := args;
 
---      ltail := lobj.child; -- Find the end of the first group list
---      while ltail /= null loop
---        if ltail.succ = null then
---          exit;
---        end if;
---        ltail := ltail.succ;
---      end loop;
       get_last(lobj.child, ltail);
 
       -- Make remaining args siblings following the list tail
@@ -328,11 +329,6 @@ package body vt_commands is
             cur.tok := cur.child.tok;
             
             -- Find end of group list
---            ltail := cur.child;
---            while ltail /= null loop
---              if ltail.succ = null then exit; end if;
---              ltail := ltail.succ;
---            end loop;
             get_last(cur.child, ltail);
 
             if ltail /= cur.child then -- More than one child
@@ -402,14 +398,23 @@ package body vt_commands is
         lobj.succ := null;
       end if;
 
-    else -- This shouldn't happen
-      assert_true(false, "Unsupported argument to 'concat'", failure, VIO);
     end if;
-    
-    -- Disconnect the modified args list from its parent command so we can use
-    -- it as the return value without copying
-    VIO.scope.script.cur_cmd.child.succ := null;
-    set_result(VIO, lobj, false);
+
+  end procedure;
+
+
+  procedure do_cmd_concat( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+  begin
+    if args = null then -- Return empty string
+      set_result(VIO);
+    else
+      concat_args(args);
+
+      -- Disconnect the modified args list from its parent command so we can use
+      -- it as the return value without copying
+      VIO.scope.script.cur_cmd.child.succ := null;
+      set_result(VIO, args, false);
+    end if;
   end procedure;
 
 
@@ -417,7 +422,7 @@ package body vt_commands is
   begin
     -- Unwind the script stack until we find one just inside a loop
     while VIO.scope.script.prev /= null and VIO.scope.script.prev.script_state /= MODE_LOOP loop
-      pop_script(VIO.scope);
+      pop_script(VIO);
     end loop;
 
     if VIO.scope.script.prev.script_state = MODE_LOOP then
@@ -502,7 +507,7 @@ package body vt_commands is
       pop_scope(VIO);
     end loop;
     while VIO.scope.script /= VIO.scope.script_stack loop
-      pop_script(VIO.scope);
+      pop_script(VIO);
     end loop;
 
     VIO.scope.script.cur_cmd := null;
@@ -1388,7 +1393,7 @@ package body vt_commands is
     -- This will be done in prepare_next_cmd() after we set the cur_cmd to null
     -- at the top-level script in this scope.
     while VIO.scope.script /= VIO.scope.script_stack loop
-      pop_script(VIO.scope);
+      pop_script(VIO);
     end loop;
     VIO.scope.script.cur_cmd := null;
     VIO.scope.script.cur_arg := null;
@@ -1862,6 +1867,76 @@ package body vt_commands is
   end procedure;
 
 
+  procedure do_cmd_uplevel( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc )is
+    variable cur, cmd_list : vt_parse_node_acc;
+    variable level : integer := 1;
+    variable i : integer;
+    variable outer_scope : scope_obj_acc;
+    variable ul_scope : ul_scope_obj_acc;
+  begin
+    cur := args;
+
+    if cur.tok.kind = TOK_integer then
+      level := cur.tok.value;
+      cur := cur.succ;
+    elsif cur.tok.kind = TOK_string and cur.tok.data(1) = '#' then
+      level := integer'value(cur.tok.data(2 to cur.tok.data'high)) * (-1);
+      cur := cur.succ;
+    end if;
+    
+    -- Look up the referenced scope
+    if level >= 0 then -- Level is relative to current scope
+      i := level;
+      outer_scope := VIO.scope;
+      while i > 0 and outer_scope /= null loop
+        outer_scope := outer_scope.prev;
+        i := i - 1;
+      end loop;
+    else -- Level is relative to global scope
+      i := level;
+      outer_scope := VIO.scope_stack;
+      while i < 0 and outer_scope /= null loop
+        outer_scope := outer_scope.succ;
+        i := i + 1;
+      end loop;
+    end if;
+
+    assert_true(outer_scope /= null, "'uplevel' Invalid scope level", failure, VIO);
+    
+    -- Build the new script
+--    write_parse_tree("uplevel_script.txt", cur);
+    concat_args(cur, true);
+    write_parse_tree("uplevel_script.txt", cur);
+    copy_parse_tree(cur, cmd_list);
+    convert_to_commands(cmd_list);
+--    write_parse_tree("uplevel_script.txt", cmd_list);
+    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+      "Expecting command list in 'uplevel'", failure, VIO);
+
+    
+    -- If selected scope is the current scope then just push an ordinary script
+    if outer_scope = VIO.scope then
+      push_script(VIO.scope, MODE_NORMAL, cmd_list);
+
+    else
+      
+      -- Disconnect higher level scopes
+      ul_scope := new ul_scope_obj;
+      ul_scope.scope_stack := outer_scope.succ;
+      outer_scope.succ := null;
+      ul_scope.succ := VIO.uplevel_scopes;
+      VIO.uplevel_scopes := ul_scope;
+      
+      VIO.scope := outer_scope;
+      
+      -- Add new script to outer scope
+      push_script(VIO.scope, MODE_NORMAL, cmd_list);
+      VIO.scope.script.uplevel_script := true;
+    end if;
+
+  end procedure;
+
+
   procedure do_cmd_upvar( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable cur, myvar, vobj : vt_parse_node_acc;
     variable level : integer := 1;
@@ -1883,7 +1958,7 @@ package body vt_commands is
     end if;
 
     -- Look up the referenced scope
-    if level > 0 then -- Level is relative to current scope
+    if level >= 0 then -- Level is relative to current scope
       i := level;
       outer_scope := VIO.scope;
       while i > 0 and outer_scope /= null loop
