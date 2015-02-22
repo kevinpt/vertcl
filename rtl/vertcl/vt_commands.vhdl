@@ -41,14 +41,16 @@
 --  ??info
 --  join        DONE
 --  lappend     DONE
+--  lassign
 --  lindex      DONE
 --  linsert     DONE
 --  list        DONE
 --  llength     partial
+--  ??lmap
 --  lrange      DONE
---  lrepeat
---  lreplace
---  lreverse
+--  lrepeat     DONE
+--  lreplace    DONE
+--  lreverse    DONE
 --  lsearch
 --  lset        DONE
 --  ??lsort
@@ -115,6 +117,9 @@ package vt_commands is
   procedure do_cmd_list( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_llength( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_lrange( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lrepeat( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lreplace( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lreverse( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_lset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_proc( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_puts( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -1017,11 +1022,12 @@ package body vt_commands is
 
         -- Compute next index      
         arg_count(selected_list.child, count);
-        if cur.tok.kind = TOK_string then
-          ix := parse_index(cur.tok.data.all, count);
-        else
-          ix := cur.tok.value;
-        end if;
+--        if cur.tok.kind = TOK_string then
+--          ix := parse_index(cur.tok.data.all, count);
+--        else
+--          ix := cur.tok.value;
+--        end if;
+        parse_index(cur, count, ix);
        
         assert_true(ix >= 0 and ix < count, "'lindex' index out of range: " & integer'image(ix), failure, VIO);
        
@@ -1058,11 +1064,12 @@ package body vt_commands is
     end loop;
 
     -- Adjust index
-    if index_expr.tok.kind = TOK_string then
-      index := parse_index(index_expr.tok.data.all, llength+1);
-    else
-      index := index_expr.tok.value;
-    end if;
+--    if index_expr.tok.kind = TOK_string then
+--      index := parse_index(index_expr.tok.data.all, llength+1);
+--    else
+--      index := index_expr.tok.value;
+--    end if;
+    parse_index(index_expr, llength+1, index);
     
     -- Check bounds
     if index > llength then
@@ -1206,6 +1213,134 @@ package body vt_commands is
   end procedure;
 
 
+  procedure do_cmd_lrepeat( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable count : integer;
+    variable rval, last, elements, next_elements : vt_parse_node_acc;
+  begin
+    assert_true(args /= null and args.tok.kind = TOK_integer, "'lrepeat' Missing count", failure, VIO);
+    
+    count := args.tok.value;
+    
+    assert_true(count > 0, "'lrepeat' Invalid count", failure, VIO);
+    
+    new_vt_parse_node(rval, VN_group);
+
+    if args.succ /= null then
+      rval.child := args.succ;
+      elements := rval.child;
+      
+      for i in 2 to count loop
+        get_last(elements, last);
+        copy_parse_tree(elements, next_elements);
+        elements := next_elements;
+        last.succ := elements;
+      end loop;
+    
+      args.succ := null; -- Disconnect args reused for first repetition
+    end if;
+
+    set_result(VIO, rval, false);    
+  end procedure;
+
+
+  procedure do_cmd_lreplace( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable llength, six, eix : integer;
+    variable last, elements, cur, succ : vt_parse_node_acc;
+  begin
+    assert_true(args /= null and args.kind = VN_group, "'lreplace' Missing list argument", failure, VIO);
+    assert_true(args.succ /= null and args.succ.succ /= null, "'lrepleace' Missing first and last indices", failure, VIO);    
+    
+    arg_count(args.child, llength);
+
+    if llength > 0 then
+      parse_index( args.succ, llength, six);
+      parse_index( args.succ.succ, llength, eix);
+
+      assert_true(six < llength, "'lreplace' list doesn't contain element " & integer'image(six), failure, VIO);
+      
+      if eix >= six and eix >= 0 then -- Delete elements being replaced
+        if eix >= llength then
+          eix := llength - 1;
+        end if;
+        
+        if six > 0 then -- Deleting after first node
+          get_element(args.child, six-1, cur);
+          get_element(args.child, eix, last);
+          succ := cur.succ;
+          cur.succ := last.succ;
+          last.succ := null;
+          free(succ);
+          
+        else -- Deleting from first node
+          get_element(args.child, eix, last);
+          succ := args.child;
+          args.child := last.succ;
+          last.succ := null;
+          free(succ);
+        end if;
+      end if;
+      
+      six := six - 1;
+        
+    else -- Insert into empty list
+      six := -1;
+    end if;
+    
+    -- Disconnect inserted elements
+    last := args.succ.succ;    
+    elements := last.succ;
+    last.succ := null;
+
+    if elements /= null then
+      get_last(elements, last);
+      
+      if six < 0 then -- Insert before start of list
+        last.succ := args.child;
+        args.child := elements;
+      else -- Insert after node before first
+        get_element(args.child, six, cur);
+        last.succ := cur.succ;
+        cur.succ := elements;
+      end if;
+    end if;
+    
+    -- Release first and last indices
+    free(args.succ);
+    args.succ := null;
+    
+    -- Disconnect the modified args list from its parent command so we can use
+    -- it as the return value without copying
+    VIO.scope.script.cur_cmd.child.succ := null;
+    set_result(VIO, args, false);
+
+  end procedure;
+
+
+  procedure do_cmd_lreverse( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable rlist, cur, succ : vt_parse_node_acc;
+  begin
+    expect_arg_count(args, 1, "lreverse", "list", VIO);
+    assert_true(args.kind = VN_group, "'lreverse' Expecting list", failure, VIO);
+    
+    rlist := args.child;
+    if rlist /= null then
+      cur := rlist.succ;
+      rlist.succ := null;
+      while cur /= null loop
+        succ := cur.succ;
+        cur.succ := rlist;
+        rlist := cur;
+        cur := succ;
+      end loop;
+      
+      args.child := rlist;
+    end if;
+    
+    -- Disconnect the modified args list from its parent command so we can use
+    -- it as the return value without copying
+    VIO.scope.script.cur_cmd.child.succ := null;
+    set_result(VIO, args, false);
+  end procedure;
 
 
   procedure do_cmd_lset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
@@ -1257,11 +1392,12 @@ package body vt_commands is
 
       -- Compute next index      
       arg_count(selected_list.child, count);
-      if cur.tok.kind = TOK_string then
-        ix := parse_index(cur.tok.data.all, count);
-      else
-        ix := cur.tok.value;
-      end if;
+--      if cur.tok.kind = TOK_string then
+--        ix := parse_index(cur.tok.data.all, count);
+--      else
+--        ix := cur.tok.value;
+--      end if;
+      parse_index(cur, count, ix);
       
       exit when cur = end_ix;
       
