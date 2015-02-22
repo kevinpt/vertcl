@@ -176,6 +176,11 @@ package body vt_lexer is
   end function;
 
 
+  constant INTEGER_TERMINATOR : maps.character_set := (
+    ' '|']'|'}'|';'|HT|LF|NUL => true,
+    others => false
+  );
+
 -- PUBLIC procedures:
 -- ==================
 
@@ -444,7 +449,7 @@ package body vt_lexer is
 
             else -- Not part of a number
               
-              if VLO.ch = ' ' or VLO.ch = HT or VLO.ch = ']' or VLO.ch = '}' or VLO.ch = ';' or VLO.ch = LF or VLO.ch = NUL then -- End of number, build an integer
+              if INTEGER_TERMINATOR(VLO.ch) then -- End of number, build an integer
                 if op_char and lit_chars = 0 then -- We only saw a unary +/- previously, treat as a string
                   SU.copy(VLO.tstr, VLO.tok.data, tslen-1);
                   VLO.tok.kind := TOK_string;
