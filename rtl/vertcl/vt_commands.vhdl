@@ -24,12 +24,12 @@
 --  ??after
 --  append      DONE
 --  ??array
---  binary
+--  ??binary
 --  break       DONE
 --  concat      DONE
 --  continue    DONE
 --  error
---  eval
+--  eval        DONE
 --  exit        DONE
 --  expr        partial
 --  for         DONE
@@ -51,7 +51,7 @@
 --  lrepeat     DONE
 --  lreplace    DONE
 --  lreverse    DONE
---  lsearch
+--  ??lsearch
 --  lset        DONE
 --  ??lsort
 --  ??package
@@ -63,7 +63,7 @@
 --  ??scan
 --  set         DONE
 --  source
---  split
+--  split       DONE
 --  string:     DONE
 --    cat       DONE
 --    compare   DONE
@@ -103,6 +103,7 @@ package vt_commands is
   procedure do_cmd_break( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_concat( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_continue( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_eval( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_exit( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_expr( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_for( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -126,6 +127,7 @@ package vt_commands is
   procedure do_cmd_rename( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_set(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_split(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc );
   procedure do_cmd_unset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -262,18 +264,7 @@ package body vt_commands is
       args.child := lobj;
     end if;
 
-    
     -- FIXME: trim leading and trailing whitespace from strings
-
---    if args.kind /= VN_group and args.tok.kind /= TOK_string then -- Convert first arg to a group
---      new_vt_parse_node(lobj, args.kind);
---      lobj.tok := args.tok;
---      lobj.child := args.child;
---      args.tok.kind := TOK_group_begin;
---      args.tok.data := null;
---      args.kind := VN_group;
---      args.child := lobj;
---    end if;
 
     if args.kind = VN_group then -- Concatenate to a group object
       lobj := args;
@@ -287,10 +278,16 @@ package body vt_commands is
         lobj.child := args.succ;
       end if;
       args.succ := null;
-
+      
       -- Any list elements that are empty or whitespace strings need to be eliminated
-      cur := lobj.child;
-      prev := null;
+      if ltail /= null then
+        cur := ltail.succ;
+        prev := ltail;
+      else -- First arg was an empty list
+        cur := lobj.child;
+        prev := null;
+      end if;
+
       while cur /= null loop
         if cur.tok.kind = TOK_string then
           contains_non_whitespace(cur.tok.data, was_true);
@@ -311,9 +308,14 @@ package body vt_commands is
         prev := cur;
         cur := cur.succ;
       end loop;
-
+      
       -- Strings need to be groupified if they have whitespace
-      cur := lobj.child;
+      if ltail /= null then
+        cur := ltail.succ;
+      else
+        cur := lobj.child;
+      end if;
+      
       while cur /= null loop
         if cur.tok.kind = TOK_string then
           contains_whitespace(cur.tok.data, was_true);
@@ -324,9 +326,15 @@ package body vt_commands is
         cur := cur.succ;
       end loop;
 
-      -- Any args that are groups need to have their top level group removed
-      cur := lobj.child;
-      prev := null;
+      -- Any args after the first that are groups need to have their top level group removed
+      if ltail /= null then
+        cur := ltail.succ;
+        prev := ltail;
+      else -- First arg was an empty list
+        cur := lobj.child;
+        prev := null;
+      end if;
+      
       while cur /= null loop
         if cur.kind = VN_group then
           if cur.child /= null then -- Transfer first node to group node
@@ -374,7 +382,6 @@ package body vt_commands is
         cur := cur.succ;
       end loop;
 
-      
     elsif args.tok.kind = TOK_string then -- Concatenate to a string
       lobj := args;
 
@@ -492,6 +499,23 @@ package body vt_commands is
 
 		eval_expr(VIO.EI, parse_tree);
     free(parse_tree);
+  end procedure;
+
+  
+  procedure do_cmd_eval( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+    variable cmd_list : vt_parse_node_acc;
+  begin
+    assert_true(args /= null, "'eval' Missing arguments", failure, VIO);
+
+    copy_parse_tree(args, cmd_list);
+    write_parse_tree("eval_tree1.txt", cmd_list);
+    concat_args(cmd_list, true);
+    write_parse_tree("eval_tree3.txt", cmd_list);    
+    convert_to_commands(cmd_list);
+    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+      "Expecting command list in 'eval'", failure, VIO);
+    write_parse_tree("eval_tree2.txt", cmd_list);
+    push_script(VIO.scope, MODE_NORMAL, cmd_list);
   end procedure;
 
 
@@ -1051,6 +1075,7 @@ package body vt_commands is
     variable llength, index, i : integer;
   begin
     assert_true(args /= null, "'linsert' Missing list", failure, VIO);
+    write_parse_tree("linsert_tree.txt", args);
     assert_true(args.kind = VN_group, "'linsert' Expecting list argument", failure, VIO);
     assert_true(args.succ /= null, "'linsert' Missing index", failure, VIO);
     index_expr := args.succ;
@@ -1564,7 +1589,82 @@ package body vt_commands is
 
   end procedure;
 
-  use extras.strings_maps.all;
+
+  use extras.strings_maps.all;  
+  
+  procedure do_cmd_split(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+    variable split_chars : unbounded_string;
+    variable split_set : character_set;
+    variable lobj, tail, element : vt_parse_node_acc;
+    variable ch : character;
+    variable start : natural;
+  begin
+    assert_true(args /= null, "'split' Missing string", failure, VIO);
+    
+    stringify(args); -- Make sure it is a string
+    
+    -- Determine which chars to split on
+    if args.succ /= null then
+      stringify(args.succ);
+      split_chars := args.succ.tok.data;
+      args.succ.tok.data := null;
+      args.succ.tok.kind := TOK_UNKNOWN;
+    else
+      split_chars := SU.to_unbounded_string(" " & HT & LF);
+    end if;
+
+    
+    new_vt_parse_node(lobj, VN_group);
+    
+    if split_chars'length = 0 then -- Empty string; each char is an element
+      for i in args.tok.data'range loop
+        new_vt_parse_node(element, VN_word);
+        element.tok.data := SU.to_unbounded_string(args.tok.data(i to i));
+        element.tok.kind := TOK_string;
+        if tail = null then
+          lobj.child := element;
+        else
+          tail.succ := element;
+        end if;
+        tail := element;
+      end loop;
+
+    else -- Splitting on chars
+      split_set := to_set(split_chars.all);
+      start := args.tok.data'low;
+
+      for i in args.tok.data'range loop
+        ch := args.tok.data(i);
+        if split_set(ch) then -- This is a split char
+          new_vt_parse_node(element, VN_word);
+          element.tok.data := SU.to_unbounded_string(args.tok.data(start to i-1));
+          element.tok.kind := TOK_string;
+          if tail = null then
+            lobj.child := element;
+          else
+            tail.succ := element;
+          end if;
+          tail := element;
+          start := i + 1;
+        end if;
+      end loop;
+      
+      if start <= args.tok.data'high or split_set(args.tok.data(args.tok.data'high)) then -- Append final element
+        new_vt_parse_node(element, VN_word);
+        element.tok.data := SU.to_unbounded_string(args.tok.data(start to args.tok.data'high));
+        element.tok.kind := TOK_string;
+        if tail = null then
+          lobj.child := element;
+        else
+          tail.succ := element;
+        end if;
+      end if;
+    end if;
+    
+    deallocate(split_chars);
+    set_result(VIO, lobj, false);
+  end procedure;
+  
 
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
     variable id : ensemble_id;

@@ -321,6 +321,7 @@ package body vt_interpreter is
       when CMD_break    =>   do_cmd_break(VIO, args);
       when CMD_concat   =>   do_cmd_concat(VIO, args);
       when CMD_continue =>   do_cmd_continue(VIO, args);
+      when CMD_eval     =>   do_cmd_eval(VIO, args);
       when CMD_exit     =>   do_cmd_exit(VIO, args);
       when CMD_expr     =>   do_cmd_expr(VIO, args);
       when CMD_for      =>   do_cmd_for(VIO, args);
@@ -344,6 +345,7 @@ package body vt_interpreter is
       when CMD_rename   =>   do_cmd_rename(VIO, args);
       when CMD_return   =>   do_cmd_return(VIO, args);
       when CMD_set      =>   do_cmd_set(VIO, args);
+      when CMD_split    =>   do_cmd_split(VIO, args);
       when CMD_string   =>   do_cmd_string(VIO, args);
       when CMD_unknown  =>   do_cmd_unknown(VIO, args);
       when CMD_unset    =>   do_cmd_unset(VIO, args);
