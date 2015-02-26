@@ -216,7 +216,7 @@ package body vt_parser is
   procedure parse_string_seg(VLO : inout vt_lex_acc; str_node: inout vt_parse_node_acc);
   procedure parse_splat(VLO : inout vt_lex_acc; splat_node: inout vt_parse_node_acc);
   procedure parse_subst(VLO : inout vt_lex_acc; cmd_list: inout vt_parse_node_acc);
-  procedure parse_group(VLO : inout vt_lex_acc; group_node: inout vt_parse_node_acc);
+  procedure parse_group(VLO : inout vt_lex_acc; group_node: inout vt_parse_node_acc; expect_end_brace : boolean := true);
 
 
   -- // Parse a list of Tcl commands separated by newlines or ";"
@@ -517,7 +517,7 @@ package body vt_parser is
 
 
   -- // Parse a group {...}
-  procedure parse_group(VLO : inout vt_lex_acc; group_node: inout vt_parse_node_acc) is
+  procedure parse_group(VLO : inout vt_lex_acc; group_node: inout vt_parse_node_acc; expect_end_brace : boolean := true) is
 
     variable tok        : vt_token;
     variable group_elem : vt_parse_node_acc;
@@ -526,8 +526,14 @@ package body vt_parser is
     next_token(VLO, tok);
     while( tok.kind /= TOK_group_end ) loop
       consume_token(VLO);
-      assert_true(tok.kind /= TOK_EOB,
-        "Unexpected end of buffer while parsing group. Missing '}'", failure, VLO);
+      
+      if expect_end_brace then
+        assert_true(tok.kind /= TOK_EOB,
+          "Unexpected end of buffer while parsing group. Missing '}'", failure, VLO);
+      elsif tok.kind = TOK_EOB then
+        free(tok);
+        return;
+      end if;
 
       new_vt_parse_node(group_elem);
 
@@ -603,14 +609,13 @@ package body vt_parser is
     variable tnode : vt_parse_node_acc;
   begin
   
-  
     append(script, buf);
     vt_lexer_init(buf, VLO);
 
     -- Start with a temporary top-level command node
     new_vt_parse_node(tnode, VN_command);
 
-    parse_command(VLO, tnode);
+    parse_group(VLO, tnode, false); -- Parse as a group with no terminating '}' char
     parse_tree := tnode.child;
     tnode.child := null;
     free(tnode);
@@ -729,8 +734,8 @@ package body vt_parser is
   procedure to_unbounded_string( variable source : in vt_parse_node_acc;
     variable dest : out unbounded_string; follow_siblings : boolean := true; sep : string := " " ) is
 
-    variable tree_img, group_img, tok_str : unbounded_string;
-    variable cur : vt_parse_node_acc;
+    variable tree_img, group_img, cmd_img, tok_str : unbounded_string;
+    variable cur, cmd : vt_parse_node_acc;
   begin
 
     SU.initialize(tree_img);
@@ -745,7 +750,21 @@ package body vt_parser is
         end if;
         SU.append(tree_img, "{" & group_img.all & "}");
         SU.free(group_img);
+      elsif cur.kind = VN_cmd_list then
+        cmd := cur.child;
+        while cmd /= null loop
+          to_unbounded_string(cmd.child, cmd_img);
+          SU.append(group_img, cmd_img.all);
+          SU.free(cmd_img);
+          if cmd.succ /= null then
+            SU.append(group_img, "; ");
+          end if;
+          cmd := cmd.succ;
+        end loop;
+        SU.append(tree_img, "[" & group_img.all & "]");
+        SU.free(group_img);
       elsif cur.tok.kind /= TOK_UNKNOWN then
+        -- FIXME: {} around strings containing spaces and empty strings?
         to_unbounded_string(cur.tok, tok_str);
         SU.append(tree_img, tok_str);
         SU.free(tok_str);
