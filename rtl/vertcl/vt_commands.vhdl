@@ -83,7 +83,7 @@
 --    trim      DONE
 --    trimleft  DONE
 --    trimright DONE
---  subst
+--  subst       partial
 --  switch
 --  ??tailcall
 --  unknown     DONE
@@ -129,6 +129,7 @@ package vt_commands is
   procedure do_cmd_set(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_split(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_subst(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc );
   procedure do_cmd_unset( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_uplevel( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -508,12 +509,13 @@ package body vt_commands is
     assert_true(args /= null, "'eval' Missing arguments", failure, VIO);
 
     copy_parse_tree(args, cmd_list);
-    write_parse_tree("eval_tree1.txt", cmd_list);
+    write_parse_tree("eval_tree1.txt", cmd_list); -- FIXME: remove
     concat_args(cmd_list, true);
-    write_parse_tree("eval_tree3.txt", cmd_list);    
-    convert_to_commands(cmd_list);
-    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-      "Expecting command list in 'eval'", failure, VIO);
+    write_parse_tree("eval_tree3.txt", cmd_list);
+    group_to_script(VIO, cmd_list);
+--    convert_to_commands(cmd_list);
+--    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--      "Expecting command list in 'eval'", failure, VIO);
     write_parse_tree("eval_tree2.txt", cmd_list);
     push_script(VIO.scope, MODE_NORMAL, cmd_list);
   end procedure;
@@ -621,9 +623,10 @@ package body vt_commands is
     if is_true then -- Execute next code body
       assert_true(next_body.kind = VN_group, "Expecting group for code body", failure, VIO);
       copy_parse_tree(next_body, cmd_list);
-      convert_to_commands(cmd_list);
-      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-        "Expecting command list in 'for'", failure, VIO);
+      group_to_script(VIO, cmd_list);
+--      convert_to_commands(cmd_list);
+--      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--        "Expecting command list in 'for'", failure, VIO);
       push_script(VIO.scope, MODE_LOOP, cmd_list);
 
     else -- Stop looping
@@ -703,9 +706,10 @@ package body vt_commands is
       
       assert_true(a_body.kind = VN_group, "'foreach' Expecting group for code body", failure, VIO);
       copy_parse_tree(a_body, cmd_list);
-      convert_to_commands(cmd_list);
-      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-        "Expecting command list in 'foreach'", failure, VIO);
+      group_to_script(VIO, cmd_list);
+--      convert_to_commands(cmd_list);
+--      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--        "Expecting command list in 'foreach'", failure, VIO);
       push_script(VIO.scope, MODE_LOOP, cmd_list);
       
       a_body.tok.value := ix + FOREACH_IX_OFFSET;
@@ -778,9 +782,10 @@ package body vt_commands is
 
         assert_true(cblock.kind = VN_group, "Expecting group for code body", failure, VIO);
         copy_parse_tree(cblock, cmd_list);
-        convert_to_commands(cmd_list);
-        assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-          "Expecting command list in 'if'", failure, VIO);
+        group_to_script(VIO, cmd_list);
+--        convert_to_commands(cmd_list);
+--        assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--          "Expecting command list in 'if'", failure, VIO);
         push_script(VIO.scope, MODE_NORMAL, cmd_list);
         return;
       else -- Evaluate false path
@@ -805,16 +810,11 @@ package body vt_commands is
             assert_true(cblock /= null, "Missing false code body", failure, VIO);
           end if;
 
-
-          assert_true(cblock.kind = VN_group, "Expecting group for code body", failure, VIO);
           copy_parse_tree(cblock, cmd_list);
-          convert_to_commands(cmd_list);
-          assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-            "Expecting command list in 'if'", failure, VIO);
+          group_to_script(VIO, cmd_list);
           push_script(VIO.scope, MODE_NORMAL, cmd_list);
           return;
         end if;
-
 
       end if;
     end loop;
@@ -1492,7 +1492,9 @@ package body vt_commands is
     --write_parse_tree("proc_args.txt", arg_defs);
 
     copy_parse_tree(args.succ.succ, cbody);
-    convert_to_commands(cbody);
+    group_to_script(VIO, cbody);
+
+--    convert_to_commands(cbody);
     --write_parse_tree("proc_body.txt", cbody);
 
     def_command(VIO, args.tok.data.all, CMD_proc_def, arg_defs, cbody);
@@ -2063,6 +2065,61 @@ package body vt_commands is
   end procedure;
   
   
+  procedure do_cmd_subst(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+    variable cur, prev : vt_parse_node_acc;
+    variable nobackslashes, nocommands, novariables : boolean;
+  begin
+    -- Look for options
+    cur := args;
+    while cur /= null loop
+      exit when cur.tok.kind /= TOK_string or cur.tok.data(1) /= '-';
+      
+      if cur.tok.data.all = "-nobackslashes" then
+        nobackslashes := true;
+      elsif cur.tok.data.all = "-nocommands" then
+        nocommands := true;
+      elsif cur.tok.data.all = "-novariables" then
+        novariables := true;
+      else
+        assert_true(false, "'subst' bad switch """ & cur.tok.data.all
+          & """: must be -nobackslashes, -nocommands, or -novariables", failure, VIO);
+      end if;
+      
+      prev := cur;
+      cur := cur.succ;
+    end loop;
+    
+    assert_true(cur.succ = null, "'subst' Too many arguments", failure, VIO);
+    
+    if cur.kind = VN_group or cur.tok.kind = TOK_string then -- We may have substitutions to make
+      stringify(cur);
+      write_parse_tree("subst_tree.txt", cur);
+      
+      -- Substitute variables and backslashes
+      if (not novariables) or (not nobackslashes) then
+        report "SUBST("& cur.tok.data.all &") nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity error;
+        substitute(VIO, cur, nobackslashes, novariables);
+      end if;
+      
+      -- Substitute commands
+      if not nocommands then
+        -- FIXME: Implement cmd subst
+      end if;
+    end if;
+
+    report "SUBST RESULT: >" & cur.tok.data.all &"<";
+
+    if prev /= null then
+      prev.succ := null;
+    else
+      -- Disconnect the modified args list from its parent command so we can use
+      -- it as the return value without copying
+      VIO.scope.script.cur_cmd.child.succ := null;
+    end if;
+    set_result(VIO, cur, false);
+  end procedure;
+  
+  
   procedure do_cmd_unknown( VIO : inout vt_interp_acc; cmd : inout vt_parse_node_acc ) is
   begin
     assert_true(false, "invalid command name """ & cmd.tok.data.all & """", error, VIO);
@@ -2144,10 +2201,12 @@ package body vt_commands is
     concat_args(cur, true);
     write_parse_tree("uplevel_script.txt", cur);
     copy_parse_tree(cur, cmd_list);
-    convert_to_commands(cmd_list);
+    group_to_script(VIO, cmd_list);
+
+--    convert_to_commands(cmd_list);
 --    write_parse_tree("uplevel_script.txt", cmd_list);
-    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-      "Expecting command list in 'uplevel'", failure, VIO);
+--    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--      "Expecting command list in 'uplevel'", failure, VIO);
 
     
     -- If selected scope is the current scope then just push an ordinary script
@@ -2274,11 +2333,16 @@ package body vt_commands is
     eval_expr(VIO, args);
     expr_is_true(VIO.EI, is_true);
     if is_true then -- Continue looping
+      if args.succ.kind /= VN_group then
+        groupify(args.succ);
+      end if;
       assert_true(args.succ.kind = VN_group, "Expecting group for code body", failure, VIO);
       copy_parse_tree(args.succ, cmd_list);
-      convert_to_commands(cmd_list);
-      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
-        "Expecting command list in 'while'", failure, VIO);
+      group_to_script(VIO, cmd_list);
+
+--      convert_to_commands(cmd_list);
+--      assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
+--        "Expecting command list in 'while'", failure, VIO);
       push_script(VIO.scope, MODE_LOOP, cmd_list);
 
     else -- Stop looping

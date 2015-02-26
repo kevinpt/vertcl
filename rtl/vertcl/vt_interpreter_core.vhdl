@@ -85,6 +85,7 @@ package vt_interpreter_core is
     CMD_set,
     CMD_split,
     CMD_string,
+    CMD_subst,
     CMD_unknown,
     CMD_unset,
     CMD_uplevel,
@@ -214,7 +215,13 @@ package vt_interpreter_core is
   procedure assert_true(test : boolean; msg : string; severity_lvl : severity_level;
     VIO : inout vt_interp_acc);
 
-  procedure substitute_in_string( VIO  : inout vt_interp_acc; str : inout unbounded_string);
+  procedure substitute_in_string( VIO  : inout vt_interp_acc; str : inout unbounded_string;
+    nobackslashes : in boolean := false; novariables : in boolean := false);
+  procedure substitute_plain_variable( VIO : inout vt_interp_acc; node : inout vt_parse_node_acc;
+    was_plain_var : out boolean);
+  procedure substitute( VIO  : inout vt_interp_acc; parse_tree : inout vt_parse_node_acc;
+    nobackslashes : in boolean := false; novariables : in boolean := false);
+
 
   procedure arg_count( args : inout vt_parse_node_acc; count : out natural );
 
@@ -233,6 +240,7 @@ package vt_interpreter_core is
   procedure stringify( node : inout vt_parse_node_acc );
 
   procedure groupify(node : inout vt_parse_node_acc);
+  procedure group_to_script( VIO : inout vt_interp_acc; nodes : inout vt_parse_node_acc);
 
   procedure def_command( VIO : inout vt_interp_acc; name : in string; id : in command_id;
     variable arg_defs : vt_parse_node_acc := null; variable cbody : vt_parse_node_acc := null );
@@ -333,7 +341,8 @@ package body vt_interpreter_core is
   );
 
 
-  procedure substitute_in_string( VIO : inout vt_interp_acc; str : inout unbounded_string) is
+  procedure substitute_in_string( VIO : inout vt_interp_acc; str : inout unbounded_string;
+      nobackslashes : in boolean := false; novariables : in boolean := false) is
     variable subst, var_value_str: unbounded_string;
     variable i, head : natural;
     variable ch : character;
@@ -364,18 +373,20 @@ package body vt_interpreter_core is
 
             if i > head then -- Normal text waiting to be appended
               SU.append(subst, str(head to i-1));
+              head := i;
             end if;
-
+            
             if i < str.all'high and str(i+1) = '{' then -- Quoted with {}
               i := i + 1;
               quoted := true;
             end if;
-            head := i+1;
+            --head := i+1;
             state := VAR_TEXT;
 
           elsif ch = '\' then
             if i > head then -- Normal text waiting to be appended
               SU.append(subst, str(head to i-1));
+              head := i;
             end if;
 
             state := ESCAPE_TEXT;
@@ -387,16 +398,20 @@ package body vt_interpreter_core is
             -- FIXME: add support for arrays
           else -- Variable has ended
             --report "@@@@@@@@ var ended: " & str(head to i-1);
-            get_variable(VIO, str(head to i-1), var);
-            if var /= null then
-              to_unbounded_string(var.var.value, var_value_str);
-              SU.append(subst, var_value_str);
-              deallocate(var_value_str);
-            else
-              assert_true(false, "Unknown variable '" & str(head to i-1) & "'", warning, VIO);
+            if not novariables then
+--              report "PERFORMING SUBST ON VAR " & str(head to i-1) & "  nv=" & boolean'image(novariables) severity failure;
+              get_variable(VIO, str(head+1 to i-1), var);
+              if var /= null then
+                to_unbounded_string(var.var.value, var_value_str);
+                SU.append(subst, var_value_str);
+                deallocate(var_value_str);
+              else
+                assert_true(false, "Unknown variable '" & str(head to i-1) & "'", warning, VIO);
+              end if;
+              
+              head := i;
             end if;
 
-            head := i;
             if not quoted then -- Back up
               i := i - 1;
             else -- Skip }
@@ -408,29 +423,33 @@ package body vt_interpreter_core is
           end if;
 
         when ESCAPE_TEXT =>
-          case ch is
-            when 'a' => SU.append(subst, BEL);
-            when 'b' => SU.append(subst, BS);
-            when 'f' => SU.append(subst, FF);
-            when 'n' => SU.append(subst, LF);
-            when 'r' => SU.append(subst, CR);
-            when 't' => SU.append(subst, HT);
-            when 'v' => SU.append(subst, VT);
-            when 'x' =>
-              assert_true(i+2 <= str.all'high, "Invalid hex escape at end of string", failure, VIO);
-              assert_true(char.is_hexadecimal_digit(str(i+1)) and
-                char.is_hexadecimal_digit(str(i+2)), "Invalid hex character", failure, VIO);
-              hex_val := to_hex_number(str(i+1));
-              hex_val := hex_val*16 + to_hex_number(str(i+2));
+          if not nobackslashes then
+            case ch is
+              when 'a' => SU.append(subst, BEL);
+              when 'b' => SU.append(subst, BS);
+              when 'f' => SU.append(subst, FF);
+              when 'n' => SU.append(subst, LF);
+              when 'r' => SU.append(subst, CR);
+              when 't' => SU.append(subst, HT);
+              when 'v' => SU.append(subst, VT);
+              when 'x' =>
+                assert_true(i+2 <= str.all'high, "Invalid hex escape at end of string", failure, VIO);
+                assert_true(char.is_hexadecimal_digit(str(i+1)) and
+                  char.is_hexadecimal_digit(str(i+2)), "Invalid hex character", failure, VIO);
+                hex_val := to_hex_number(str(i+1));
+                hex_val := hex_val*16 + to_hex_number(str(i+2));
 
-              SU.append(subst, character'val(hex_val));
+                SU.append(subst, character'val(hex_val));
 
-              i := i + 2;
-            when others =>
-              SU.append(subst, ch);
-          end case;
+                i := i + 2;
+              when others =>
+                SU.append(subst, ch);
+            end case;
 
-          head := i + 1;
+            head := i + 1;
+
+          end if;
+
           state := NORMAL_TEXT;
 
       end case;
@@ -476,7 +495,107 @@ package body vt_interpreter_core is
     deallocate(str);
     str := subst;
   end procedure;
-  
+
+
+  procedure substitute_plain_variable( VIO : inout vt_interp_acc; node : inout vt_parse_node_acc;
+    was_plain_var : out boolean) is
+
+    variable ch : character;
+    variable var_name : unbounded_string;
+    variable var : scope_var_acc;
+    variable var_value, cur_node, next_node : vt_parse_node_acc;
+  begin
+
+    if node.tok.data.all'length < 2 or 
+      (node.tok.data.all'length > 1 and node.tok.data(node.tok.data'left) /= '$') then -- This is not a variable
+      return;
+    end if;
+    
+    if node.child /= null then
+      return;
+    end if;
+
+
+    SU.slice(node.tok.data, 2, node.tok.data.all'high, var_name);
+
+    --report "#### sub var: " & var_name.all;
+
+    get_variable(VIO, var_name.all, var);
+
+    if var /= null then
+      -- Convert node into variable parse tree
+      copy_parse_tree(var.var.value, var_value);
+
+      --report  "DBG: subst copied tree: " & integer'image(var_value.id);
+
+      -- Copy first value node into identifier node
+      free(node.tok);
+      node.tok := var_value.tok;
+      node.kind := var_value.kind;
+
+      -- Not possible for identifiers to have children. Safe to overwrite.
+      node.child := var_value.child;
+      node.last_child := var_value.last_child;
+
+      -- FIXME: This "if" can be removed? (pull assignment to cur_node.succ out of loop)
+      if var_value.succ /= null then -- Reconnect the node siblings
+        next_node := node.succ;
+        node.succ := var_value.succ;
+
+        -- Look for end of siblings
+        cur_node := var_value.succ; -- FIXME: start from node like below in subst_cmds()?
+        while cur_node /= null loop
+          if cur_node.succ = null then -- Found end
+            cur_node.succ := next_node;
+            exit;
+          end if;
+          cur_node := cur_node.succ;
+        end loop;
+      end if;
+
+      -- Discard the first node from var_value now that it is redundant
+      var_value.tok.data := null;
+      var_value.succ := null;
+      var_value.child := null;
+      free(var_value);
+
+    else
+      assert_true(false, "Unknown variable '" & var_name.all & "'", warning, VIO);
+    end if;
+
+    deallocate(var_name);
+    was_plain_var := true;
+
+  end procedure;
+
+
+  procedure substitute( VIO  : inout vt_interp_acc; parse_tree : inout vt_parse_node_acc;
+    nobackslashes : in boolean := false; novariables : in boolean := false) is
+    variable cur_node : vt_parse_node_acc;
+    variable was_plain_var : boolean;
+  begin
+
+    cur_node := parse_tree;
+    
+    report "SUBSTITUTE() nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity error;
+
+    while cur_node /= null loop
+      if cur_node.tok.kind = TOK_string then
+        -- Substitute variables and escape chars in strings
+        -- If a string consists solely of a variable name then we want to
+        -- substitute with its parsed object form. Otherwise everything becomes a string.
+        substitute_plain_variable(VIO, cur_node, was_plain_var);
+        
+        if not was_plain_var then
+          substitute_in_string(VIO, cur_node.tok.data, nobackslashes, novariables);
+        end if;
+
+      end if;
+      cur_node := cur_node.succ;
+    end loop;
+
+  end procedure;
+
 
   procedure def_command( VIO : inout vt_interp_acc; name : in string; id : in command_id;
     variable arg_defs : vt_parse_node_acc := null; variable cbody : vt_parse_node_acc := null ) is
@@ -749,6 +868,20 @@ package body vt_interpreter_core is
     write_parse_tree("group_tree.txt", node);
     
   end procedure;
+  
+  
+  procedure group_to_script( VIO : inout vt_interp_acc; nodes : inout vt_parse_node_acc) is
+  begin
+    if nodes.kind /= VN_group then
+      groupify(nodes);
+    end if;
+    assert_true(nodes.kind = VN_group, "Expecting group for code body", failure, VIO);
+    convert_to_commands(nodes);
+    assert_true(nodes /= null and nodes.kind = VN_cmd_list,
+      "Expecting command list", failure, VIO);
+
+  end procedure;
+
 
   -- ## Convert a node into a group object
   -- #  This will split strings containing whitespace into separate group elements
