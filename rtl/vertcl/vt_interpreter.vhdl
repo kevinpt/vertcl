@@ -122,105 +122,6 @@ package body vt_interpreter is
 -- ===================
 
 
-  procedure substitute_plain_variable( VIO : inout vt_interp_acc; node : inout vt_parse_node_acc;
-    was_plain_var : out boolean) is
-
-    variable ch : character;
-    variable var_name : unbounded_string;
-    variable var : scope_var_acc;
-    variable var_value, cur_node, next_node : vt_parse_node_acc;
-  begin
-
-    if node.tok.data.all'length < 2 or 
-      (node.tok.data.all'length > 1 and node.tok.data(node.tok.data'left) /= '$') then -- This is not a variable
-      return;
-    end if;
-    
-    if node.child /= null then
-      return;
-    end if;
-
-
-    SU.slice(node.tok.data, 2, node.tok.data.all'high, var_name);
-
-    --report "#### sub var: " & var_name.all;
-
-    get_variable(VIO, var_name.all, var);
-
-    if var /= null then
-      -- Convert node into variable parse tree
-      copy_parse_tree(var.var.value, var_value);
-
-      --report  "DBG: subst copied tree: " & integer'image(var_value.id);
-
-      -- Copy first value node into identifier node
-      free(node.tok);
-      node.tok := var_value.tok;
-      node.kind := var_value.kind;
-
-      -- Not possible for identifiers to have children. Safe to overwrite.
-      node.child := var_value.child;
-      node.last_child := var_value.last_child;
-
-      -- FIXME: This "if" can be removed? (pull assignment to cur_node.succ out of loop)
-      if var_value.succ /= null then -- Reconnect the node siblings
-        next_node := node.succ;
-        node.succ := var_value.succ;
-
-        -- Look for end of siblings
-        cur_node := var_value.succ; -- FIXME: start from node like below in subst_cmds()?
-        while cur_node /= null loop
-          if cur_node.succ = null then -- Found end
-            cur_node.succ := next_node;
-            exit;
-          end if;
-          cur_node := cur_node.succ;
-        end loop;
-      end if;
-
-      -- Discard the first node from var_value now that it is redundant
-      var_value.tok.data := null;
-      var_value.succ := null;
-      var_value.child := null;
-      free(var_value);
-
-    else
-      assert_true(false, "Unknown variable '" & var_name.all & "'", warning, VIO);
-    end if;
-
-    deallocate(var_name);
-    was_plain_var := true;
-
-  end procedure;
-
-
-
-
-  procedure substitute( VIO  : inout vt_interp_acc; parse_tree : inout vt_parse_node_acc) is
-    variable cur_node : vt_parse_node_acc;
-    variable was_plain_var : boolean;
-  begin
-
-    cur_node := parse_tree;
-
-    while cur_node /= null loop
-      if cur_node.tok.kind = TOK_string then
-        -- Substitute variables and escape chars in strings
-        -- If a string consists solely of a variable name then we want to
-        -- substitute with its parsed object form. Otherwise everything becomes a string.
-        substitute_plain_variable(VIO, cur_node, was_plain_var);
-        
-        if not was_plain_var then
-          substitute_in_string(VIO, cur_node.tok.data);
-        end if;
-
-      end if;
-      cur_node := cur_node.succ;
-    end loop;
-
-  end procedure;
-
-
   procedure exec_proc(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc;
     cmd_def : inout command_info_acc) is
     variable arg, arg_def, next_arg, cbody : vt_parse_node_acc;
@@ -302,7 +203,8 @@ package body vt_interpreter is
   begin
 
     -- Perform variable substitutions on command elements
-    substitute(VIO, cmd.child);
+
+--    substitute(VIO, cmd.child); -- FIXME: this should only be done before command substitution?
 
     assert_true(cmd.child.tok.kind = TOK_string,
       "Invalid command name. Must be a string: " & vt_token_kind'image(cmd.child.tok.kind),
@@ -347,6 +249,7 @@ package body vt_interpreter is
       when CMD_set      =>   do_cmd_set(VIO, args);
       when CMD_split    =>   do_cmd_split(VIO, args);
       when CMD_string   =>   do_cmd_string(VIO, args);
+      when CMD_subst    =>   do_cmd_subst(VIO, args);
       when CMD_unknown  =>   do_cmd_unknown(VIO, args);
       when CMD_unset    =>   do_cmd_unset(VIO, args);
       when CMD_uplevel  =>   do_cmd_uplevel(VIO, args);
@@ -461,6 +364,8 @@ package body vt_interpreter is
       if cur_cmd /= null then
         cur_arg := cur_cmd.child;
         VIO.scope.script.cur_arg := cur_arg;
+        
+        substitute(VIO, cur_arg); -- Perform variable and backslash substitutions before any command substs
       end if;
     end if;
 
@@ -545,6 +450,7 @@ package body vt_interpreter is
 
     --report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & cur_cmd.tok.data.all & " line: " & integer'image(cur_cmd.tok.value);
     report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & " line: " & integer'image(cur_cmd.child.tok.value);
+    
 
     -- Check if any arguments require command substitution
     -- If so then push a new script so that they evaluate first
@@ -625,6 +531,7 @@ package body vt_interpreter is
           
           if cur_arg.child.kind /= VN_group then -- We need to convert to a group
             -- Substitute variables
+            report "SUBSTITUTE IN PREP NEXT CMD SPLAT";
             substitute(VIO, cur_arg.child);
             if cur_arg.child.kind /= VN_group then -- Didn't become group after var substitution
               groupify(cur_arg.child);
