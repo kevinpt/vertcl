@@ -265,121 +265,120 @@ package body vt_lexer is
       while active = true loop
         case lex_st is
           when START =>
-            case VLO.ch is
-              when LF | ';' =>
-                if not VLO.multi_line then
-                  VLO.tstr(1) := VLO.ch;
-                  tslen := 1;
-                  lex_st := EOL;
-                else -- Cancel multi-line status
-                  VLO.multi_line := false;
-                end if;
-
-              when ' ' | HT | CR | VT | FF => -- Whitespace
-                  if VLO.segmented_string and VLO.subst_depth = 0 then -- Resume segmented string
-                  VLO.tstr(1) := VLO.ch;
-                  tslen := 1;
-                  lex_st := STRING_LIT;
-                end if;
-                -- Otherwise just consume the whitespace
-
-              when '#' =>
-                if VLO.permit_comment then
-                  lex_st := COMMENT;
-                else -- Not a special char
-                  VLO.tstr(1) := VLO.ch;
-                  tslen := 1;
-                  if VLO.segmented_string and VLO.subst_depth = 0 then -- Resume segmented string
-                    lex_st := STRING_LIT;
-                  else
-                    lex_st := IDENTIFIER;
-                  end if;
-                end if;
-
-              when '"' => -- Start of string literal (or ending quote of segmented string)
---                VLO.start_line := VLO.line_num;
-                tslen := 0;
+          
+            if VLO.segmented_string and VLO.subst_depth = 0 then -- Resume segmented string
+              if VLO.ch /= '"' then
+                VLO.tstr(1) := VLO.ch;
+                tslen := 1;
                 lex_st := STRING_LIT;
+              else  -- End of segmented string literal
+                get_next_char(VLO); -- Skip to next character
+                VLO.tok.kind := TOK_string_seg_end;
 
-                if not VLO.segmented_string then -- Start of string
-                  lex_st := STRING_LIT;
+                VLO.segmented_string := false;
+                SU.copy(VLO.tstr, VLO.tok.data, tslen);
+                VLO.valid_token := true;
+                active := false;
+              end if;
+            else -- Determine next state based on the character
+          
+              case VLO.ch is
+                when LF | ';' =>
+                  if not VLO.multi_line then
+                    VLO.tstr(1) := VLO.ch;
+                    tslen := 1;
+                    lex_st := EOL;
+                  else -- Cancel multi-line status
+                    VLO.multi_line := false;
+                  end if;
 
-                else -- End of segmented string literal
-                  get_next_char(VLO); -- Skip to next character
-                  VLO.tok.kind := TOK_string_seg_end;
+                when ' ' | HT | CR | VT | FF => -- Whitespace
+                  -- Just consume the whitespace
 
-                  VLO.segmented_string := false;
-                  SU.copy(VLO.tstr, VLO.tok.data, tslen);
-                  VLO.valid_token := true;
-                  active := false;
-                end if;
-
-              when '+' =>
-                --sign := 1;
-                VLO.tstr(1) := VLO.ch;
-                tslen := 1;
-                op_char := true;
-                lex_st := INTEGER_LIT;
-
-              when '-' =>
-                VLO.tstr(1) := VLO.ch;
-                tslen := 1;
-                sign := -1;
-                op_char := true;
-                lex_st := INTEGER_LIT;
-
-
-              when '\' => -- Line continuation or char escape
-                peek_next_char(VLO, next_ch);
-                if next_ch /= NUL then -- An escaped char
-                  VLO.tstr(1) := VLO.ch;
-                  tslen := 1;
-                  prev_escape := true;
-                  if VLO.segmented_string and VLO.subst_depth = 0 then -- Resume segmented string
-                    lex_st := STRING_LIT;
-                  else
+                when '#' =>
+                  if VLO.permit_comment then
+                    lex_st := COMMENT;
+                  else -- Not a special char
+                    VLO.tstr(1) := VLO.ch;
+                    tslen := 1;
                     lex_st := IDENTIFIER;
                   end if;
-                else -- A line continuation
-                  VLO.multi_line := true;
-                end if;
 
-              when '{' =>
-                lex_st := GROUP_BEGIN;
+                when '"' => -- Start of string literal (or ending quote of segmented string)
+                  tslen := 0;
+                  lex_st := STRING_LIT;
 
-              when '}' =>
-                lex_st := GROUP_END;
+                  if not VLO.segmented_string then -- Start of string
+                    lex_st := STRING_LIT;
 
-              when '[' =>
-                lex_st := SUBST_BEGIN;
+                  else -- End of segmented string literal
+                    get_next_char(VLO); -- Skip to next character
+                    VLO.tok.kind := TOK_string_seg_end;
 
-              when ']' =>
-                lex_st := SUBST_END;
+                    VLO.segmented_string := false;
+                    SU.copy(VLO.tstr, VLO.tok.data, tslen);
+                    VLO.valid_token := true;
+                    active := false;
+                  end if;
 
-              when NUL =>
-                lex_st := EOB;
-
-              when others =>
-                if char.is_digit(VLO.ch) then
+                when '+' =>
                   VLO.tstr(1) := VLO.ch;
                   tslen := 1;
-                  tval := to_number(VLO.ch);
+                  op_char := true;
                   lex_st := INTEGER_LIT;
 
-                elsif is_identchar(VLO.ch) or VLO.segmented_string then
+                when '-' =>
                   VLO.tstr(1) := VLO.ch;
                   tslen := 1;
-                  if VLO.segmented_string and VLO.subst_depth = 0 then -- Resume segmented string
-                    lex_st := STRING_LIT;
-                  else
+                  sign := -1;
+                  op_char := true;
+                  lex_st := INTEGER_LIT;
+
+
+                when '\' => -- Line continuation or char escape
+                  peek_next_char(VLO, next_ch);
+                  if next_ch /= NUL then -- An escaped char
+                    VLO.tstr(1) := VLO.ch;
+                    tslen := 1;
+                    prev_escape := true;
                     lex_st := IDENTIFIER;
+                  else -- A line continuation
+                    VLO.multi_line := true;
                   end if;
 
-                else
-                  assert_true(false, "Invalid character '" & VLO.ch, failure, VLO);
-                  active := false;
-                end if;
-            end case;
+                when '{' =>
+                  lex_st := GROUP_BEGIN;
+
+                when '}' =>
+                  lex_st := GROUP_END;
+
+                when '[' =>
+                  lex_st := SUBST_BEGIN;
+
+                when ']' =>
+                  lex_st := SUBST_END;
+
+                when NUL =>
+                  lex_st := EOB;
+
+                when others =>
+                  if char.is_digit(VLO.ch) then
+                    VLO.tstr(1) := VLO.ch;
+                    tslen := 1;
+                    tval := to_number(VLO.ch);
+                    lex_st := INTEGER_LIT;
+
+                  elsif is_identchar(VLO.ch) or VLO.segmented_string then
+                    VLO.tstr(1) := VLO.ch;
+                    tslen := 1;
+                    lex_st := IDENTIFIER;
+
+                  else
+                    assert_true(false, "Invalid character '" & VLO.ch, failure, VLO);
+                    active := false;
+                  end if;
+              end case;
+            end if;
 
           when IDENTIFIER => -- Unquoted string
             if is_identchar(VLO.ch) or prev_escape then -- Append to identifier
@@ -403,7 +402,7 @@ package body vt_lexer is
 
             if VLO.ch = '[' and not prev_escape then -- Subst command in string
               VLO.segmented_string := true;
-              VLO.subst_depth := 0;
+              VLO.subst_depth := -1; -- Can't use 0 as it signals the end of substitution
               -- Emit current string segment
               VLO.tok.kind := TOK_string_seg;
               SU.copy(VLO.tstr, VLO.tok.data, tslen);
@@ -536,7 +535,11 @@ package body vt_lexer is
             active := false;
 
           when SUBST_BEGIN =>
-            VLO.subst_depth := VLO.subst_depth + 1;
+            if VLO.subst_depth >= 0 then
+              VLO.subst_depth := VLO.subst_depth + 1;
+            else -- Special case for handling start of substitution in a segmented string
+              VLO.subst_depth := 1;
+            end if;
             VLO.tok.kind := TOK_subst_begin;
             VLO.valid_token := true;
             active := false;
