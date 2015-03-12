@@ -156,6 +156,7 @@ package vt_interpreter_core is
 
     script_state : script_mode;
     uplevel_script : boolean; -- Flag to identify script created with an uplevel command
+    permit_subst   : boolean; -- Flag to inhibit var and backslash substitutions when processing the subst command
 
     prev : script_obj_acc; -- Parent script
     succ : script_obj_acc; -- Child script
@@ -354,6 +355,8 @@ package body vt_interpreter_core is
     variable hex_val : natural;
   begin
     SU.initialize(subst);
+    
+--    report "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ SUBST in String >" & str.all & "<";
 
     i := str.all'low;
     head := i;
@@ -399,7 +402,7 @@ package body vt_interpreter_core is
           else -- Variable has ended
             --report "@@@@@@@@ var ended: " & str(head to i-1);
             if not novariables then
---              report "PERFORMING SUBST ON VAR " & str(head to i-1) & "  nv=" & boolean'image(novariables) severity failure;
+--              report "PERFORMING SUBST ON VAR " & str(head to i-1) & "  nv=" & boolean'image(novariables) severity note;
               get_variable(VIO, str(head+1 to i-1), var);
               if var /= null then
                 to_unbounded_string(var.var.value, var_value_str);
@@ -458,6 +461,10 @@ package body vt_interpreter_core is
     end loop;
 
     -- Finish up last segment
+    if novariables and state = VAR_TEXT then -- Force state to normal mode to prevent var subst
+      state := NORMAL_TEXT;
+    end if;
+
     case state is
       when NORMAL_TEXT =>
         SU.append(subst, str(head to str'high));
@@ -465,7 +472,7 @@ package body vt_interpreter_core is
       when VAR_TEXT =>
         assert_true(quoted = false, "Expecting close brace for variable", failure, VIO);
 
-        get_variable(VIO, str(head to str'high), var);
+        get_variable(VIO, str(head+1 to str'high), var);
 
         if var /= null then
           to_unbounded_string(var.var.value, var_value_str);
@@ -477,23 +484,11 @@ package body vt_interpreter_core is
 
       when ESCAPE_TEXT => -- This shouldn't happen
         assert_true(false, "Invalid escape", failure, VIO);
---        case ch is
---          when 'a' => SU.append(subst, BEL);
---          when 'b' => SU.append(subst, BS);
---          when 'f' => SU.append(subst, FF);
---          when 'n' => SU.append(subst, LF);
---          when 'r' => SU.append(subst, CR);
---          when 't' => SU.append(subst, HT);
---          when 'v' => SU.append(subst, VT);
---          when 'x' => assert_true(false, "Invalid hex escape at end of string", failure, VIO);
---          when others =>
---            SU.append(subst, ch);
---        end case;
-
     end case;
 
     deallocate(str);
     str := subst;
+    
   end procedure;
 
 
@@ -569,6 +564,7 @@ package body vt_interpreter_core is
   end procedure;
 
 
+  -- ## Substitute variables in a parse tree
   procedure substitute( VIO  : inout vt_interp_acc; parse_tree : inout vt_parse_node_acc;
     nobackslashes : in boolean := false; novariables : in boolean := false) is
     variable cur_node : vt_parse_node_acc;
@@ -577,10 +573,11 @@ package body vt_interpreter_core is
 
     cur_node := parse_tree;
     
-    report "SUBSTITUTE() nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity error;
+--    report "SUBSTITUTE() nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity note;
 
     while cur_node /= null loop
       if cur_node.tok.kind = TOK_string then
+--        report "   SUB STR >" & cur_node.tok.data.all & "<";
         -- Substitute variables and escape chars in strings
         -- If a string consists solely of a variable name then we want to
         -- substitute with its parsed object form. Otherwise everything becomes a string.
@@ -1158,6 +1155,7 @@ package body vt_interpreter_core is
     script.succ := null;
     
     script.uplevel_script := false;
+    script.permit_subst := true;
 
     if scope.script_stack /= null then
       scope.script.script_state := script_state; -- Set mode on higher level script

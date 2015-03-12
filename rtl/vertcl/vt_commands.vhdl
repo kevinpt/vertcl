@@ -200,6 +200,13 @@ package body vt_commands is
 --    end if;
 --  end procedure;
 
+  -- Disconnect the modified args list from its parent command so we can use
+  -- it as the return value without copying
+  procedure disconnect_all_args( VIO : inout vt_interp_acc ) is
+  begin
+    VIO.scope.script.cur_cmd.child.succ := null;
+  end procedure;
+
 -- ////////////////////////////
 
   procedure do_cmd_append( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
@@ -423,9 +430,7 @@ package body vt_commands is
     else
       concat_args(args);
 
-      -- Disconnect the modified args list from its parent command so we can use
-      -- it as the return value without copying
-      VIO.scope.script.cur_cmd.child.succ := null;
+      disconnect_all_args(VIO);
       set_result(VIO, args, false);
     end if;
   end procedure;
@@ -1332,10 +1337,8 @@ package body vt_commands is
     -- Release first and last indices
     free(args.succ);
     args.succ := null;
-    
-    -- Disconnect the modified args list from its parent command so we can use
-    -- it as the return value without copying
-    VIO.scope.script.cur_cmd.child.succ := null;
+
+    disconnect_all_args(VIO);    
     set_result(VIO, args, false);
 
   end procedure;
@@ -1360,10 +1363,8 @@ package body vt_commands is
       
       args.child := rlist;
     end if;
-    
-    -- Disconnect the modified args list from its parent command so we can use
-    -- it as the return value without copying
-    VIO.scope.script.cur_cmd.child.succ := null;
+
+    disconnect_all_args(VIO);
     set_result(VIO, args, false);
   end procedure;
 
@@ -2063,10 +2064,120 @@ package body vt_commands is
       set_result(VIO, a_string, false);
     end if;
   end procedure;
+
   
+  procedure convert_to_seg_string( tree : inout vt_parse_node_acc; nocommands : in boolean; sub_group : in boolean := false ) is
+    variable cur, prev, last, child : vt_parse_node_acc;
+    variable add_space : boolean;
+  begin
+    if sub_group then -- Insert '{' char at start of group
+      cur := tree.child;
+      if cur.kind = VN_group or cur.kind = VN_cmd_list then -- Insert string node
+        new_vt_parse_node(child, VN_word);
+        child.tok.kind := TOK_string;
+        child.tok.data := new string'(" {");
+        child.succ := tree.child;
+        tree.child := child;
+      else
+        stringify(cur);
+        SU.insert(cur.tok.data, cur.tok.data'left, " {");
+      end if;
+    end if;
+
+    -- Convert non-cmd_list nodes into strings, recursively converting nested groups
+    cur := tree.child;
+    while cur /= null loop
+      if cur.kind = VN_group then
+        convert_to_seg_string(cur, nocommands, true);
+        child := cur.child; -- Disconnect converted child nodes from group
+        cur.child := null;
+        
+        get_last(child, last);
+        splice_parse_tree(child, cur);
+        cur := last;
+
+      elsif cur.kind = VN_word or (cur.kind = VN_cmd_list and nocommands) then
+        add_space := false;
+        if cur.tok.kind = TOK_string_seg or cur.tok.kind = TOK_string_seg_end then
+          if cur.tok.data'length = 0 then -- This was a placeholder we don't need
+            if prev /= null then
+              prev.succ := cur.succ;
+              cur.succ := null;
+              free(cur);
+              cur := prev.succ;
+              next;
+            else -- First child
+              tree.child := cur.succ;
+              cur.succ := null;
+              free(cur);
+              cur := tree.child;
+              next;
+            end if;
+            
+          else -- Make it a normal string
+            cur.tok.kind := TOK_string;
+          end if;
+
+        elsif cur.kind /= VN_cmd_list then -- Not part of a segmented string so we need to add space between nodes
+          add_space := true;
+        end if;
+
+        stringify(cur);
+
+        if add_space then
+          if prev /= null then
+            SU.insert(cur.tok.data, cur.tok.data'left, " ");
+          end if;
+        end if;
+      end if;
+
+      prev := cur;
+      cur := cur.succ;
+    end loop;
+
+    if sub_group then -- Insert '}' char at end of group
+      if prev.kind = VN_group or prev.kind = VN_cmd_list then -- Insert string node
+        new_vt_parse_node(child, VN_word);
+        child.tok.kind := TOK_string;
+        child.tok.data := new string'("{");
+        prev.succ := child;
+      else
+        SU.append(prev.tok.data, '}');
+      end if;
+    end if;
+  end procedure;
+
+
+  procedure group_to_seg_string( tree : inout vt_parse_node_acc; nocommands : in boolean ) is
+    variable cur, prev : vt_parse_node_acc;
+  begin
+    convert_to_seg_string(tree, nocommands);
+    tree.kind := VN_string_seg;
+    
+    -- Merge consecutive string segments
+    prev := tree.child;
+    cur := prev.succ;
+    while cur /= null loop
+      if prev.kind = VN_word and cur.kind = VN_word then -- Merge
+        SU.append(prev.tok.data, cur.tok.data);
+        prev.succ := cur.succ;
+        cur.succ := null;
+        free(cur);
+        cur := prev.succ;
+        next;
+      end if;
+      
+      prev := cur;
+      cur := cur.succ;
+    end loop;
+    
+  end procedure;  
+
+
+  constant SUBST_STATE_RESUME  : integer := -101000;
   
   procedure do_cmd_subst(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
-    variable cur, prev : vt_parse_node_acc;
+    variable cur, prev, node, cmd_list : vt_parse_node_acc;
     variable nobackslashes, nocommands, novariables : boolean;
   begin
     -- Look for options
@@ -2090,31 +2201,71 @@ package body vt_commands is
     end loop;
     
     assert_true(cur.succ = null, "'subst' Too many arguments", failure, VIO);
-    
-    if cur.kind = VN_group or cur.tok.kind = TOK_string then -- We may have substitutions to make
-      stringify(cur);
-      write_parse_tree("subst_tree.txt", cur);
+
+    -- If we are resuming from doing a command substitution then we don't need to do any transformations
+    -- We detect this if the argument is already a segmented string which wouldn't be possible if
+    -- it was a normal argument.
+
+    if cur.tok.kind = TOK_integer or cur.tok.value /= SUBST_STATE_RESUME then -- First time in subst command
+      if cur.kind = VN_group then -- Convert the group into a flattened segmented string
+        group_to_seg_string(cur, nocommands);
+        if cur.child /= null and cur.child.kind = VN_word and cur.child.succ = null then -- Just a single string; convert it
+          cur.kind := cur.child.kind;
+          cur.tok := cur.child.tok;
+          cur.child.tok.data := null;
+          free(cur.child);
+          cur.child := null;
+        end if;
+      end if;
       
-      -- Substitute variables and backslashes
+
       if (not novariables) or (not nobackslashes) then
-        report "SUBST("& cur.tok.data.all &") nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity error;
-        substitute(VIO, cur, nobackslashes, novariables);
+        -- Substitute variables and backslashes
+        if cur.tok.kind = TOK_string then
+          substitute(VIO, cur, nobackslashes, novariables);
+        elsif cur.kind = VN_string_seg and cur.child /= null then
+          substitute(VIO, cur.child, nobackslashes, novariables);
+        end if;
       end if;
-      
-      -- Substitute commands
-      if not nocommands then
-        -- FIXME: Implement cmd subst
-      end if;
+
+--    else
+--      report "####################################################################### SUBST: Resuming after subst commands";
+--      report " STR = >" & cur.tok.data.all & "<";
     end if;
+    
+    
+    if cur.kind = VN_string_seg then
+      -- We have to perform command substitutions by creating new scripts for each one.
+      -- These are special because we won't permit any further variable or backslash substitutions
+      -- on this command's argument when we return from the script.
 
-    report "SUBST RESULT: >" & cur.tok.data.all &"<";
+      cur.tok.value := SUBST_STATE_RESUME;
 
-    if prev /= null then
+      node := cur.child;
+      while node /= null loop
+        if node.kind = VN_cmd_list then -- Create a new script
+          VIO.scope.script.cur_arg := cur;
+          VIO.scope.script.cur_seg := node;
+          copy_parse_tree(node, cmd_list);
+          VIO.scope.script.permit_subst := false; -- Prevent additional substitutions
+          push_script(VIO.scope, MODE_SUBST, cmd_list);
+          return;
+        end if;
+        node := node.succ;
+      end loop;
+      
+      -- Note that this only executes for the first command substitution in a segmented string.
+      -- Any others will be handled in prepare_next_cmd() and there will no longer be a segmented
+      -- string to process when do_cmd_subst() resumes.
+    end if;
+    
+    VIO.scope.script.permit_subst := true; -- Let current script 
+    
+--    report "####################################################################### SUBST: FINISHED " & boolean'image(VIO.scope.script.permit_subst);
+    if prev /= null then -- We had options
       prev.succ := null;
     else
-      -- Disconnect the modified args list from its parent command so we can use
-      -- it as the return value without copying
-      VIO.scope.script.cur_cmd.child.succ := null;
+      disconnect_all_args(VIO);
     end if;
     set_result(VIO, cur, false);
   end procedure;

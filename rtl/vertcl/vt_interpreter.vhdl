@@ -202,14 +202,9 @@ package body vt_interpreter is
     variable cmd_id : command_id := CMD_UNDETERMINED;
   begin
 
-    -- Perform variable substitutions on command elements
-
---    substitute(VIO, cmd.child); -- FIXME: this should only be done before command substitution?
-
     assert_true(cmd.child.tok.kind = TOK_string,
       "Invalid command name. Must be a string: " & vt_token_kind'image(cmd.child.tok.kind),
       failure, VIO);
-
 
     get_command(VIO, cmd.child.tok.data.all, cmd_def);
     if cmd_def /= null then
@@ -365,14 +360,16 @@ package body vt_interpreter is
         cur_arg := cur_cmd.child;
         VIO.scope.script.cur_arg := cur_arg;
         
-        substitute(VIO, cur_arg); -- Perform variable and backslash substitutions before any command substs
+        if VIO.scope.script.permit_subst then -- FIXME: review looping commands to see if they need to clear this flag
+          substitute(VIO, cur_arg); -- Perform variable and backslash substitutions before any command substs
+        end if;
       end if;
     end if;
 
 
     if cur_cmd = null then -- Script is done
       -- If this is not the top level script for the current scope we
-      -- need complete it and possibly substitute the return value into the
+      -- need to complete it and possibly substitute the return value into the
       -- calling script.
       while VIO.scope.script /= VIO.scope.script_stack loop
         report "                  >>>>>>>>> UNWIND SCRIPT 1";
