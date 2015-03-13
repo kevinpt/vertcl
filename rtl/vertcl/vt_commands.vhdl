@@ -41,11 +41,11 @@
 --  ??info
 --  join        DONE
 --  lappend     DONE
---  lassign
+--  lassign     DONE
 --  lindex      DONE
 --  linsert     DONE
 --  list        DONE
---  llength     partial
+--  llength     DONE
 --  ??lmap
 --  lrange      DONE
 --  lrepeat     DONE
@@ -62,7 +62,7 @@
 --  return      partial
 --  ??scan
 --  set         DONE
---  source
+--  source      DONE
 --  split       DONE
 --  string:     DONE
 --    cat       DONE
@@ -83,7 +83,7 @@
 --    trim      DONE
 --    trimleft  DONE
 --    trimright DONE
---  subst       partial
+--  subst       DONE
 --  switch
 --  ??tailcall
 --  unknown     DONE
@@ -113,6 +113,7 @@ package vt_commands is
   procedure do_cmd_incr( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_join( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_lappend( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
+  procedure do_cmd_lassign( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_lindex( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_linsert( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_list( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
@@ -127,6 +128,7 @@ package vt_commands is
   procedure do_cmd_rename( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_return( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc );
   procedure do_cmd_set(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
+  procedure do_cmd_source(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_split(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_string(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
   procedure do_cmd_subst(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc);
@@ -964,6 +966,48 @@ package body vt_commands is
   end procedure;
 
 
+  procedure do_cmd_lassign( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
+    variable cur, succ, varname, rval : vt_parse_node_acc;
+  begin
+    assert_true(args /= null and args.succ /= null,
+      "Wrong # args: should be 'lassign list varName ?varName ...?'", failure, VIO);
+    
+    if args.kind /= VN_group then
+      groupify(args);
+    end if;
+    
+    varname := args.succ;
+    
+    cur := args.child;
+    args.child := null;
+    while cur /= null and varname /= null loop
+      stringify(varname);
+      
+      succ := cur.succ;
+      cur.succ := null;
+      set_variable(VIO, varname.tok.data.all, cur, false);
+      cur := succ;
+      varname := varname.succ;
+    end loop;
+    
+    while varname /= null loop -- List is shorter than number of variables; assign empty strings to rest
+      stringify(varname);
+      new_vt_parse_node(rval, VN_word);
+      rval.tok.kind := TOK_string;
+      SU.initialize(rval.tok.data);
+      set_variable(VIO, varname.tok.data.all, rval, false);
+      varname := varname.succ;
+    end loop;
+
+    if cur /= null then -- Elements remain to return as a list
+      new_vt_parse_node(rval, VN_group);
+      rval.child := cur;
+      set_result(VIO, rval, false);
+    else -- Return empty string
+      set_result(VIO);
+    end if;
+  end procedure;
+
 
   alias maps is extras.strings_maps;
   constant PLUS_MINUS_SET : maps.character_set := ( '+'|'-' => true, others => false);
@@ -1171,32 +1215,19 @@ package body vt_commands is
 
   procedure do_cmd_llength( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable count : natural;
-    variable ch : character;
-    variable in_word : boolean := false;
   begin
     expect_arg_count(args, 1, "llength", "list", VIO);
-
-    if args.kind = VN_group then
-      arg_count(args.child, count);
-
-    elsif args.tok.kind = TOK_string and args.tok.data.all'length > 0 then -- Count spaces
-      -- FIXME: This should ignore spaces in {} groups and ""
-      for i in args.tok.data.all'range loop
-        ch := args.tok.data(i);
-        if ch = ' ' or ch = HT then
-          in_word := false;
-        else
-          if not in_word then
-            count := count + 1;
-          end if;
-          in_word := true;
-        end if;
-      end loop;
+    
+    if args.kind /= VN_group then
+      groupify(args);
     end if;
+
+    arg_count(args.child, count);    
 
     set_result(VIO, count);
   end procedure;
-  
+
+
   procedure do_cmd_lrange( VIO : inout vt_interp_acc; args : inout vt_parse_node_acc ) is
     variable llength, six, eix: integer;
     variable start_node, cur : vt_parse_node_acc;
@@ -1590,6 +1621,18 @@ package body vt_commands is
       end if;
     end if;
 
+  end procedure;
+
+
+  procedure do_cmd_source(VIO : inout vt_interp_acc; args : inout vt_parse_node_acc) is
+    variable parse_tree : vt_parse_node_acc;
+  begin
+    expect_arg_count(args, 1, "source", "fileName", VIO);
+    
+    stringify(args);
+    
+    parse_vertcl_file(args.tok.data.all, parse_tree);
+    push_script(VIO.scope, MODE_NORMAL, parse_tree);
   end procedure;
 
 
