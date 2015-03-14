@@ -452,10 +452,11 @@ package body vt_parser is
 
 
   -- // Parse a command substitution [...]
+  -- FIXME: Can this call back to parse_command() ??
   procedure parse_subst(VLO : inout vt_lex_acc; cmd_list: inout vt_parse_node_acc) is
 
     variable tok : vt_token;
-    variable subst_node, cmd : vt_parse_node_acc;
+    variable subst_node, cmd, seg : vt_parse_node_acc;
   begin
 
     -- Get the elements of the command
@@ -489,6 +490,22 @@ package body vt_parser is
           attach_child(cmd, cmd_list);
           subst_node.kind := VN_word;
           subst_node.tok := tok;
+          
+        elsif tok.kind = TOK_string_seg then
+          subst_node.kind := VN_string_seg;
+          subst_node.tok.value := VLO.line_num;
+
+          if tok.data.all'length > 0 then -- Start with a segment
+            new_vt_parse_node(seg, VN_word);
+            seg.tok := tok;
+            seg.tok.kind := TOK_string;
+            attach_child(seg, subst_node);
+          else -- Empty string
+            free(tok);
+          end if;
+
+          parse_string_seg(VLO, subst_node);
+
           
         else -- Command argument
           subst_node.kind := VN_word;
