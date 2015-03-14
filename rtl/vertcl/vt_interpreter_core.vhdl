@@ -502,6 +502,8 @@ package body vt_interpreter_core is
     variable var : scope_var_acc;
     variable var_value, cur_node, next_node : vt_parse_node_acc;
   begin
+  
+    was_plain_var := false;
 
     if node.tok.data.all'length < 2 or 
       (node.tok.data.all'length > 1 and node.tok.data(node.tok.data'left) /= '$') then -- This is not a variable
@@ -513,7 +515,7 @@ package body vt_interpreter_core is
     end if;
 
 
-    SU.slice(node.tok.data, 2, node.tok.data.all'high, var_name);
+    SU.slice(node.tok.data, 2, node.tok.data.all'high, var_name); -- Get everything after the $
 
     --report "#### sub var: " & var_name.all;
 
@@ -556,12 +558,12 @@ package body vt_interpreter_core is
       var_value.child := null;
       free(var_value);
 
-    else
-      assert_true(false, "Unknown variable '" & var_name.all & "'", warning, VIO);
+      was_plain_var := true;
+--    else
+--      assert_true(false, "Unknown variable '" & var_name.all & "'", warning, VIO);
     end if;
 
     deallocate(var_name);
-    was_plain_var := true;
 
   end procedure;
 
@@ -569,13 +571,13 @@ package body vt_interpreter_core is
   -- ## Substitute variables in a parse tree
   procedure substitute( VIO  : inout vt_interp_acc; parse_tree : inout vt_parse_node_acc;
     nobackslashes : in boolean := false; novariables : in boolean := false) is
-    variable cur_node : vt_parse_node_acc;
+    variable cur_node, seg : vt_parse_node_acc;
     variable was_plain_var : boolean;
   begin
 
     cur_node := parse_tree;
     
---    report "SUBSTITUTE() nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity note;
+    report "SUBSTITUTE() nb=" & boolean'image(nobackslashes) & "  nv=" & boolean'image(novariables) severity note;
 
     while cur_node /= null loop
       if cur_node.tok.kind = TOK_string then
@@ -588,6 +590,15 @@ package body vt_interpreter_core is
         if not was_plain_var then
           substitute_in_string(VIO, cur_node.tok.data, nobackslashes, novariables);
         end if;
+        
+      elsif cur_node.kind = VN_string_seg then -- Substitute in each segment
+        seg := cur_node.child;
+        while seg /= null loop
+          if seg.kind /= VN_cmd_list then
+            substitute_in_string(VIO, seg.tok.data, nobackslashes, novariables);
+          end if;
+          seg := seg.succ;
+        end loop;
 
       end if;
       cur_node := cur_node.succ;

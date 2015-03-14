@@ -361,10 +361,6 @@ package body vt_interpreter is
       if cur_cmd /= null then
         cur_arg := cur_cmd.child;
         VIO.scope.script.cur_arg := cur_arg;
-        
-        if VIO.scope.script.permit_subst then -- FIXME: review looping commands to see if they need to clear this flag
-          substitute(VIO, cur_arg); -- Perform variable and backslash substitutions before any command substs
-        end if;
       end if;
     end if;
 
@@ -394,62 +390,48 @@ package body vt_interpreter is
       -- If this is not the top level script for the current scope we
       -- need to replace the active argument of the previous script with
       -- the return value of the last command.
---      if VIO.scope.script.prev /= null then
---        complete_subst;
---        -- FIXME: handle null cur_cmd
---      else -- Top-level script ended
-        report "                           >>>>>>>>>> TOP LEVEL ENDED " & boolean'image(VIO.scope = VIO.scope_stack);
-        -- If this is not the top-level scope then we are in a proc that ended
-        unwind: while VIO.scope /= VIO.scope_stack loop
-          pop_scope(VIO); -- Return to calling scope
-          cur_cmd := VIO.scope.script.cur_cmd.succ;
+      report "                           >>>>>>>>>> TOP LEVEL ENDED " & boolean'image(VIO.scope = VIO.scope_stack);
+      -- If this is not the top-level scope then we are in a proc that ended
+      unwind: while VIO.scope /= VIO.scope_stack loop
+        pop_scope(VIO); -- Return to calling scope
+        cur_cmd := VIO.scope.script.cur_cmd.succ;
 
---          if cur_cmd /= null then -- This scope has more commands to process
---            exit unwind;
---          else -- The script ended
---            while VIO.scope.script /= VIO.scope.script_stack loop
---              report "                  >>>>>>>>> UNWIND SCRIPT 2";
---              complete_script;
+        exit unwind when cur_cmd /= null; -- This scope has more commands to process
+        -- The script ended
+        while VIO.scope.script /= VIO.scope.script_stack loop
+          report "                  >>>>>>>>> UNWIND SCRIPT 2";
+          complete_script;
 
---              if cur_cmd /= null then
---                report "               >>>>>>>> UNWIND 2 FOUND CMD " & cur_cmd.tok.data.all;
---                exit unwind;
---              end if;
---            end loop;
-
---          end if;
-          exit unwind when cur_cmd /= null; -- This scope has more commands to process
-          -- The script ended
-          while VIO.scope.script /= VIO.scope.script_stack loop
-            report "                  >>>>>>>>> UNWIND SCRIPT 2";
-            complete_script;
-
-            if cur_cmd /= null then -- FIXME: exit when
-              report "               >>>>>>>> UNWIND 2 FOUND CMD " & cur_cmd.tok.data.all;
-              exit unwind;
-            end if;
-          end loop;
-
+          if cur_cmd /= null then -- FIXME: exit when
+            report "               >>>>>>>> UNWIND 2 FOUND CMD " & cur_cmd.tok.data.all;
+            exit unwind;
+          end if;
         end loop;
 
-        if cur_cmd = null then
-          -- We unwound the full call stack and have no more commands to process
-          VIO.scope.script.cur_cmd := null;
-          return;
-        end if;
+      end loop;
 
-        --cur_arg := cur_cmd.child;
---      end if;
+      if cur_cmd = null then
+        -- We unwound the full call stack and have no more commands to process
+        VIO.scope.script.cur_cmd := null;
+        return;
+      end if;
 
+      cur_arg := cur_cmd.child;
     end if;
 
     VIO.scope.script.cur_cmd := cur_cmd;
     VIO.scope.script.cur_arg := cur_arg;
 
 
+    if VIO.scope.script.permit_subst then -- FIXME: review looping commands to see if they need to clear this flag
+      substitute(VIO, cur_arg); -- Perform variable and backslash substitutions before any command substs
+      -- Prevent additional substitutions until this command is done
+      VIO.scope.script.permit_subst := false;
+    end if;
+
+
     --report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & cur_cmd.tok.data.all & " line: " & integer'image(cur_cmd.tok.value);
     report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & " line: " & integer'image(cur_cmd.child.tok.value);
-    
 
     -- Check if any arguments require command substitution
     -- If so then push a new script so that they evaluate first
@@ -531,7 +513,7 @@ package body vt_interpreter is
           if cur_arg.child.kind /= VN_group then -- We need to convert to a group
             -- Substitute variables
             report "SUBSTITUTE IN PREP NEXT CMD SPLAT";
-            substitute(VIO, cur_arg.child);
+            substitute(VIO, cur_arg.child); -- FIXME: test with permit_subst?
             if cur_arg.child.kind /= VN_group then -- Didn't become group after var substitution
               groupify(cur_arg.child);
               -- FIXME: In Tcl embedded $varname elements are not expanded further by wrapping them in {}
@@ -629,6 +611,7 @@ package body vt_interpreter is
     loop
       prepare_next_cmd(VIO);
       cmd := VIO.scope.script.cur_cmd;
+      VIO.scope.script.permit_subst := true;
 
       if cmd /= null and cmd.kind = VN_command then
         exec_command(VIO, cmd);
