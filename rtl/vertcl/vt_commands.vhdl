@@ -147,6 +147,7 @@ library extras;
 use extras.strings_unbounded.unbounded_string;
 use extras.strings;
 use extras.strings_maps_constants.all;
+use extras.strings_fixed."*";
 
 library vertcl;
 use vertcl.vt_lexer.all;
@@ -183,24 +184,6 @@ package body vt_commands is
     end loop;
   end procedure;
 
-  -- FIXME: move to core
---  procedure stringify( node : inout vt_parse_node_acc ) is
---    variable img : unbounded_string;
---  begin
---    if node.tok.kind /= TOK_string then
---      if node.kind = VN_group then
---        to_unbounded_string(node.child, img);
---      else -- Numeric value
---        to_unbounded_string(node, img, false);
---      end if;
-
---      node.tok.data := img;
---      node.tok.kind := TOK_string;
---      node.kind := VN_word;
---      free(node.child);
---      node.child := null;
---    end if;
---  end procedure;
 
   -- Disconnect the modified args list from its parent command so we can use
   -- it as the return value without copying
@@ -502,7 +485,6 @@ package body vt_commands is
 
     -- Parse and interpret expression
     parse_expression(estr, parse_tree);
-    --write_parse_tree("expr_tree.txt", parse_tree); -- FIXME: remove
     deallocate(estr);
 
 		eval_expr(VIO.EI, parse_tree);
@@ -518,12 +500,9 @@ package body vt_commands is
     copy_parse_tree(args, cmd_list);
     write_parse_tree("eval_tree1.txt", cmd_list); -- FIXME: remove
     concat_args(cmd_list, true);
-    write_parse_tree("eval_tree3.txt", cmd_list);
-    group_to_script(VIO, cmd_list);
---    convert_to_commands(cmd_list);
---    assert_true(cmd_list /= null and cmd_list.kind = VN_cmd_list,
---      "Expecting command list in 'eval'", failure, VIO);
     write_parse_tree("eval_tree2.txt", cmd_list);
+    group_to_script(VIO, cmd_list);
+    write_parse_tree("eval_tree3.txt", cmd_list);
     push_script(VIO.scope, MODE_NORMAL, cmd_list);
   end procedure;
 
@@ -1966,16 +1945,14 @@ package body vt_commands is
       
       
       when ENS_repeat =>
-        assert_true(a_string.succ /= null and a_string.succ.tok.kind = TOK_integer, "'string' invalud repeat count", failure, VIO);
+        assert_true(a_string.succ /= null and a_string.succ.tok.kind = TOK_integer, "'string' invalid repeat count", failure, VIO);
         
         ix := a_string.succ.tok.value;
         
-        if ix > 0 then -- FIXME: implement with "*"
+        if ix > 0 then
           tstr := a_string.tok.data;
           a_string.tok.data := null;
-          for i in 1 to a_string.succ.tok.value loop
-            SU.append(a_string.tok.data, tstr);
-          end loop;
+          SU.append(a_string.tok.data, ix * tstr.all);
           deallocate(tstr);
           return_string := true;
         else
@@ -2223,6 +2200,7 @@ package body vt_commands is
     variable cur, prev, node, cmd_list : vt_parse_node_acc;
     variable nobackslashes, nocommands, novariables : boolean;
   begin
+
     -- Look for options
     cur := args;
     while cur /= null loop
