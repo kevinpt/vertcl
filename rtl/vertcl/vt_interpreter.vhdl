@@ -29,17 +29,35 @@ use vertcl.vt_interpreter_core.all;
 
 package vt_interpreter is
 
-  procedure vt_interp_init( VIO : inout vt_interp_acc );
+  procedure initialize( VIO : inout vt_interp_acc );
+  procedure load_tcl_script(VIO : inout vt_interp_acc; fname : in string);
   procedure interpret( VIO : inout vt_interp_acc );
+
+  -- Alias some required types and procedures from vt_interpreter_core.
+  -- This allows us to only require the use of the vt_interpreter package to use vertcl.
+  
+  alias vt_interp_acc is vertcl.vt_interpreter_core.vt_interp_acc;
 
   -- FIXME: Expand exported API calls
   alias get_variable is vertcl.vt_interpreter_core.get_variable[vt_interp_acc, string, scope_var_acc];
   alias get_variable is vertcl.vt_interpreter_core.get_variable[scope_obj_acc, string, scope_var_acc];
+  alias free is vertcl.vt_interpreter_core.free[vt_interp_acc];
+  
+  -- Additional specialized implementations of get_variable() and set_variable()
+  procedure get_variable( scope : inout scope_obj_acc; name : in string; val : out integer );  -- Get an integer
+  procedure get_variable( VIO : inout vt_interp_acc; name : in string; val : out integer );
 
 
+--  The standalone procedures for Vertcl can only be used within a single process.
+--  If you need to access an interpreter from multiple processes it must be implemented as
+--  a shared variable. The best approach is to use VHDL-93 style shared variables as they
+--  impose no limiatations on the use of access types as parameters and the existing procedures
+--  can be used. If VHDL-93 can't be used then a VHDL-2002 shared variable can be created using
+--  the following potected type. There are significant limitations on the types that can be
+--  returned from the get() method though.
   type vertcl_interpreter is protected
-    procedure init;
-    procedure load_file(fname : in string);
+    procedure initialize;
+    procedure load_tcl_script(fname : in string);
     procedure run;
     procedure terminate;
 
@@ -69,22 +87,18 @@ package body vt_interpreter is
   type vertcl_interpreter is protected body
     variable VIO : vt_interp_acc;
 
-    procedure init is
+    procedure initialize is
     begin
       if VIO /= null then
         free(VIO);
       end if;
       VIO := new vt_interp;
-      vt_interp_init(VIO);
+      initialize(VIO);
     end procedure;
 
-    procedure load_file(fname : in string) is
-      variable parse_tree : vt_parse_node_acc;
+    procedure load_tcl_script(fname : in string) is
     begin
-      parse_vertcl_file(fname, parse_tree);
-      push_script(VIO.scope, MODE_NORMAL, parse_tree);
-
-      write_parse_tree("parse_tree.txt", parse_tree); -- FIXME: remove this
+      load_tcl_script(VIO, fname);
     end procedure;
 
     procedure run is
@@ -99,14 +113,8 @@ package body vt_interpreter is
 
     impure function get(name : string) return integer is
       variable rval : integer;
-      variable var : scope_var_acc;
     begin
-      --get_variable(VIO, name, rval); -- FIXME: have an integer version of get_variable
-      get_variable(VIO, name, var);
-      if var /= null then
-        rval := var.var.value.tok.value;
-      end if;
-
+      get_variable(VIO, name, rval);
       return rval;
     end function;
 
@@ -117,6 +125,21 @@ package body vt_interpreter is
 
   end protected body;
 
+
+
+  procedure get_variable( scope : inout scope_obj_acc; name : in string; val : out integer ) is
+    variable var : scope_var_acc;
+  begin
+    get_variable(scope, name, var);
+    if var /= null then
+      val := var.var.value.tok.value;
+    end if;
+  end procedure;
+
+  procedure get_variable( VIO : inout vt_interp_acc; name : in string; val : out integer ) is
+  begin
+    get_variable(VIO.scope, name, val);
+  end procedure;
 
 -- PRIVATE procedures:
 -- ===================
@@ -571,9 +594,12 @@ package body vt_interpreter is
 -- PUBLIC procedures:
 -- ==================
 
-  procedure vt_interp_init( VIO : inout vt_interp_acc ) is
-    --variable cur_cmd : command_info_acc;
+  procedure initialize( VIO : inout vt_interp_acc ) is
   begin
+    if VIO = null then
+      VIO := new vt_interp;
+    end if;
+    
     VIO.active := true;
 
     -- Create top-level scope
@@ -599,6 +625,18 @@ package body vt_interpreter is
     end loop;
 
     expr_interp_init(VIO.EI);
+  end procedure;
+
+
+  procedure load_tcl_script(VIO : inout vt_interp_acc; fname : in string) is
+    variable parse_tree : vt_parse_node_acc;
+  begin
+    if VIO = null then
+      initialize(VIO);
+    end if;
+  
+    parse_vertcl_file(fname, parse_tree);
+    push_script(VIO.scope, MODE_NORMAL, parse_tree);
   end procedure;
 
 
