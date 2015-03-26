@@ -363,21 +363,12 @@ package body vt_interpreter is
     cur_cmd := VIO.scope.script.cur_cmd;
     cur_arg := VIO.scope.script.cur_arg;
 
-    if cur_arg = null then -- All arguments were expanded and we need a new command
-      --report "                   $$$$$$$$$$$$$$$$$$$$$$$ NEED NEW COMMAND";
+    if cur_arg = null and cur_cmd /= null then -- All arguments were expanded and we need a new command
       -- Determine the next command in the current script
-      if cur_cmd = null then -- Script is done
-        --report "                 $$$$$$$$$$$$$$$$$$$$$$$$ SCRIPT IS DONE";
-        -- FIXME: put this test into outer if statement
-      elsif cur_cmd.kind = VN_cmd_list then -- Start of script
-        --report "                          $$$$$$$$$$$$$$ CHOSE CHILD:" & integer'image(cur_cmd.tok.value);
+      if cur_cmd.kind = VN_cmd_list then -- Start of script
         cur_cmd := cur_cmd.child;
       else
-        --report "                          $$$$$$$$$$$$$$ CHOSE SUCC: " & cur_cmd.tok.data.all;
         cur_cmd := cur_cmd.succ;
-        --if cur_cmd /= null then
-        --report "                          $$$$$$$$$$$$$$ SUCC: " & cur_cmd.tok.data.all;
-        --end if;
       end if;
 
       VIO.scope.script.cur_cmd := cur_cmd;
@@ -393,17 +384,9 @@ package body vt_interpreter is
       -- need to complete it and possibly substitute the return value into the
       -- calling script.
       while VIO.scope.script /= VIO.scope.script_stack loop
-        report "                  >>>>>>>>> UNWIND SCRIPT 1";
         complete_script;
-
-        if cur_cmd /= null then -- FIXME exit when
-          report "               >>>>>>>> UNWIND 1 FOUND CMD ";
-          exit;
-        end if;
+        exit when cur_cmd /= null;
       end loop;
-
---      VIO.scope.script.cur_cmd := cur_cmd;
---      VIO.scope.script.cur_arg := cur_arg;
 
     end if;
 
@@ -413,7 +396,7 @@ package body vt_interpreter is
       -- If this is not the top level script for the current scope we
       -- need to replace the active argument of the previous script with
       -- the return value of the last command.
-      report "                           >>>>>>>>>> TOP LEVEL ENDED " & boolean'image(VIO.scope = VIO.scope_stack);
+--      report "                           >>>>>>>>>> TOP LEVEL ENDED " & boolean'image(VIO.scope = VIO.scope_stack);
       -- If this is not the top-level scope then we are in a proc that ended
       unwind: while VIO.scope /= VIO.scope_stack loop
         pop_scope(VIO); -- Return to calling scope
@@ -422,13 +405,8 @@ package body vt_interpreter is
         exit unwind when cur_cmd /= null; -- This scope has more commands to process
         -- The script ended
         while VIO.scope.script /= VIO.scope.script_stack loop
-          report "                  >>>>>>>>> UNWIND SCRIPT 2";
           complete_script;
-
-          if cur_cmd /= null then -- FIXME: exit when
-            report "               >>>>>>>> UNWIND 2 FOUND CMD " & cur_cmd.tok.data.all;
-            exit unwind;
-          end if;
+          exit unwind when cur_cmd /= null;
         end loop;
 
       end loop;
@@ -453,12 +431,10 @@ package body vt_interpreter is
     end if;
 
 
-    --report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & cur_cmd.tok.data.all & " line: " & integer'image(cur_cmd.tok.value);
-    report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & " line: " & integer'image(cur_cmd.child.tok.value);
+--    report ">>>>>>>>>>>>>>>>>>>>> GOT COMMAND: " & " line: " & integer'image(cur_cmd.child.tok.value);
 
     -- Check if any arguments require command substitution
     -- If so then push a new script so that they evaluate first
-    --cur_arg := cur_cmd.child;
     while cur_arg /= null loop
       case cur_arg.kind is
         when VN_cmd_list =>
@@ -517,9 +493,9 @@ package body vt_interpreter is
 
 
         when VN_splat =>
-          report "************************* SPLAT ***********************************";
+--          report "************************* SPLAT ***********************************";
           if cur_arg.child.kind = VN_cmd_list then -- Splatting a command substitution
-            report ">>>>>>>>>>>>>>>>>>>>>>>> SPLAT CMD SUBST <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<";
+--            report ">>>>>>>>>>>>>>>>>>>>>>>> SPLAT CMD SUBST <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<";
             VIO.scope.script.cur_arg := cur_arg; -- Save our current position in this script
             VIO.scope.script.cur_seg := cur_arg.child;
 
@@ -535,7 +511,7 @@ package body vt_interpreter is
           
           if cur_arg.child.kind /= VN_group then -- We need to convert to a group
             -- Substitute variables
-            report "SUBSTITUTE IN PREP NEXT CMD SPLAT";
+--            report "SUBSTITUTE IN PREP NEXT CMD SPLAT";
             substitute(VIO, cur_arg.child); -- FIXME: test with permit_subst?
             if cur_arg.child.kind /= VN_group then -- Didn't become group after var substitution
               groupify(cur_arg.child);
@@ -548,32 +524,37 @@ package body vt_interpreter is
           
           -- Insert group elements into argument list
           -- FIXME: use splicer
-          group_node := cur_arg.child;
-          splat_terms := group_node.child;
-          
-          cur_arg.tok := splat_terms.tok;     -- Copy first term into current arg
-          cur_arg.kind := splat_terms.kind;
-          cur_arg.child := splat_terms.child;
-          splat_terms.tok.data := null;
-          splat_terms.child := null;
-          
-          spl_succ := cur_arg.succ; -- Save next argument
-          
-          cur_arg.succ := splat_terms.succ;
+          report "$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ SPLAT SPLICE ";
+          splat_terms := cur_arg.child.child;
+          cur_arg.child.child := null;
+          splice_parse_tree(splat_terms, cur_arg);
+          ---------------------------
+--          group_node := cur_arg.child;
+--          splat_terms := group_node.child;
+--          
+--          cur_arg.tok := splat_terms.tok;     -- Copy first term into current arg
+--          cur_arg.kind := splat_terms.kind;
+--          cur_arg.child := splat_terms.child;
+--          splat_terms.tok.data := null;
+--          splat_terms.child := null;
+--          
+--          spl_succ := cur_arg.succ; -- Save next argument
+--          
+--          cur_arg.succ := splat_terms.succ;
 
-          -- Find last element in splatted group
-          spl_cur := cur_arg;
-          while spl_cur /= null loop
-            if spl_cur.succ = null then
-              spl_cur.succ := spl_succ; -- Reconnect with following arguments
-              exit;
-            end if;
-            spl_cur := spl_cur.succ;
-          end loop;
-          
-          -- Release unneeded group node and its first splat term
-          splat_terms.succ := null;
-          free(group_node);
+--          -- Find last element in splatted group
+--          spl_cur := cur_arg;
+--          while spl_cur /= null loop
+--            if spl_cur.succ = null then
+--              spl_cur.succ := spl_succ; -- Reconnect with following arguments
+--              exit;
+--            end if;
+--            spl_cur := spl_cur.succ;
+--          end loop;
+--          
+--          -- Release unneeded group node and its first splat term
+--          splat_terms.succ := null;
+--          free(group_node);
 
           
         when others =>
