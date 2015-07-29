@@ -1,3 +1,12 @@
+.. VerTcl documentation master file, created by
+   sphinx-quickstart on Wed Jul 29 08:47:44 2015.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+======
+VerTcl
+======
+
 **VerTcl is in active development. The core functionality is implemented but most builtin commands are not complete yet.**
 
 VerTcl is a Tcl interpreter implemented in VHDL. It provides a way to execure Tcl scripts from within a VHDL simulation to enhance design verification. In the simplest case VerTcl lets you read and parse configuration data used to alter testbench stimulus. In more complex testbenches VerTcl allows interaction with a design using portable Tcl scripts within the simulaton environment rather than from the outside. This can streamline complex simulations because Tcl scripts are reloaded after resetting a simulation without having to reelaborate a design.
