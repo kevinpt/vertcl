@@ -4,5 +4,5 @@
 test = $MGC_WD/build/lib/test
 vertcl = $MGC_WD/build/lib/vertcl
 vertcl_2008 = $MGC_WD/build/lib/vertcl_2008
-extras = /lstorage/Projects/Devel/vhdl/new-ve/vhdl-extras/build/lib/extras
+extras = /projects/devel/vhdl-extras/build/lib/extras
 
