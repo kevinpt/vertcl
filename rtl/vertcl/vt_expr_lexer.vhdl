@@ -24,6 +24,9 @@ library extras;
 use extras.strings_unbounded.unbounded_string;
 use extras.text_buffering.all;
 
+library vertcl;
+use vertcl.vt_lexer.to_hex_number;
+
 package vt_expr_lexer is
 
   alias char is extras.characters_handling;
@@ -38,16 +41,22 @@ package vt_expr_lexer is
     -- tables can be constructed in the parser using ranges of this type as
     -- an index.
 
+    -- Unary only operators
+    ETOK_bit_not, ETOK_not,
+
     -- Unary and binary operators
     ETOK_minus, ETOK_plus,
 
     -- Binary operators
-    ETOK_mul, ETOK_div, ETOK_pow,
-    ETOK_eq, ETOK_ne, ETOK_lt, ETOK_gt, ETOK_le, ETOK_ge
+    ETOK_mul, ETOK_div, ETOK_mod, ETOK_pow,
+    ETOK_eq, ETOK_ne, ETOK_lt, ETOK_gt, ETOK_le, ETOK_ge,
+    ETOK_and, ETOK_or,
+    
+    ETOK_bit_and, ETOK_bit_or, ETOK_bit_xor
   );
 
-  subtype vt_etoken_unary is vt_etoken_kind range ETOK_minus to ETOK_plus;
-  subtype vt_etoken_binary is vt_etoken_kind range ETOK_minus to ETOK_ge;
+  subtype vt_etoken_unary is vt_etoken_kind range ETOK_bit_not to ETOK_plus;
+  subtype vt_etoken_binary is vt_etoken_kind range ETOK_minus to ETOK_bit_xor;
 
   type vt_etoken is record
     kind  : vt_etoken_kind;   -- Identify contents of token
@@ -183,6 +192,16 @@ package body vt_expr_lexer is
   end function;
 
 
+  constant OCTAL_CHAR_SET : maps.character_set := (
+    '0'                         to  '7'                        => true,
+    others  =>  false
+  );
+
+  -- // Return true if character is valid for an octal digit
+  function is_octal_digit( ch : character ) return boolean is
+  begin
+    return maps.is_in(ch, OCTAL_CHAR_SET);
+  end function;
 
 -- PUBLIC procedures:
 -- ==================
@@ -212,8 +231,8 @@ package body vt_expr_lexer is
   procedure next_token( ELO : inout expr_lex_acc; tok : out vt_etoken ) is
 
     type elex_state is ( START, IDENTIFIER, SYMBOL, SYMBOL_STAR,
-      SYMBOL_EQ, SYMBOL_EXCLAM, SYMBOL_LT, SYMBOL_GT,
-      INTEGER_LIT, FLOAT_LIT, FLOAT_EXPONENT, EOB );
+      SYMBOL_EQ, SYMBOL_EXCLAM, SYMBOL_LT, SYMBOL_GT, SYMBOL_AND, SYMBOL_OR,
+      BASED_LIT, HEX_LIT, BINARY_LIT, OCTAL_LIT, INTEGER_LIT, FLOAT_LIT, FLOAT_EXPONENT, EOB );
 
     variable lex_st      : elex_state := START;
     variable active      : boolean := true;
@@ -238,13 +257,17 @@ package body vt_expr_lexer is
               when ' ' | HT | CR | VT | FF => -- Whitespace
                 null;
 
-              when '(' | ')' | '+' | '-' | '/' | ',' =>
+              -- Arithmetic ops
+              when '(' | ')' | '+' | '-' | '/' | ',' | '~' | '^' =>
                 ELO.tstr(1) := ELO.ch;
                 tslen := 1;
                 lex_st := SYMBOL;
 
+              -- Two character operators require an intermediate state to disambiguate:
               when '*' =>
                 lex_st := SYMBOL_STAR;   -- Handle * and **
+                
+              -- Relational ops
 
               when '=' =>
                 lex_st := SYMBOL_EQ;     -- Handle ==
@@ -257,22 +280,40 @@ package body vt_expr_lexer is
 
               when '>' =>
                 lex_st := SYMBOL_GT;     -- Handle > and >=
+                
+              when '&' =>
+                lex_st := SYMBOL_AND;
+
+              when '|' =>
+                lex_st := SYMBOL_OR;
+
 
               when NUL =>
-                lex_st := EOB;
+                lex_st := EOB;           -- End of buffer
+                
+              -- Numeric literals
+                
+              when '.' =>
+                tfloat := 0.0;
+                frac_digits := 0;
+                lex_st := FLOAT_LIT;
+                
+              when '0' =>
+                tval := 0;
+                lex_st := BASED_LIT;
 
               when others =>
-                if char.is_digit(ELO.ch) then
+                if char.is_digit(ELO.ch) then -- Integer
                   tval := to_number(ELO.ch);
                   lex_st := INTEGER_LIT;
 
-                elsif is_identchar(ELO.ch) then
+                elsif is_identchar(ELO.ch) then -- Identifier
                   ELO.tstr(1) := ELO.ch;
                   tslen := 1;
                   lex_st := IDENTIFIER;
 
                 else
-                  assert_true(false, "Invalid character '" & ELO.ch, error, ELO);
+                  assert_true(false, "Invalid character '" & ELO.ch & "'", error, ELO);
                   active := false;
                 end if;
             end case;
@@ -285,6 +326,8 @@ package body vt_expr_lexer is
               when '-' => ELO.tok.kind := ETOK_minus;
               when '/' => ELO.tok.kind := ETOK_div;
               when ',' => ELO.tok.kind := ETOK_comma;
+              when '~' => ELO.tok.kind := ETOK_bit_not;
+              when '^' => ELO.tok.kind := ETOK_bit_xor;
               when others => ELO.tok.kind := ETOK_UNKNOWN;
             end case;
             ELO.valid_token := true;
@@ -306,7 +349,7 @@ package body vt_expr_lexer is
               ELO.tok.kind := ETOK_eq;
               ELO.valid_token := true;
             else -- Bare '=', invalid token
-              assert_true(false, "Expr lexer: Invalid character '" & ELO.ch, error, ELO);
+              assert_true(false, "Expr lexer: Invalid character '" & ELO.ch & "'", error, ELO);
             end if;
             active := false;
 
@@ -316,7 +359,7 @@ package body vt_expr_lexer is
               ELO.tok.kind := ETOK_ne;
               ELO.valid_token := true;
             else -- Bare '!', invalid token
-              assert_true(false, "Expr lexer: Invalid character '" & ELO.ch, error, ELO);
+              assert_true(false, "Expr lexer: Invalid character '" & ELO.ch & "'", error, ELO);
             end if;
             active := false;
 
@@ -339,6 +382,77 @@ package body vt_expr_lexer is
             end if;
             ELO.valid_token := true;
             active := false;
+            
+          when SYMBOL_AND =>
+            if ELO.ch = '&' then    -- '&&' operator
+              get_next_char(ELO); -- Consume this character
+              ELO.tok.kind := ETOK_and;
+            else -- Single '&' bit-and operator
+              ELO.tok.kind := ETOK_bit_and;
+            end if;
+            ELO.valid_token := true;
+            active := false;
+
+          when SYMBOL_OR =>
+            if ELO.ch = '|' then    -- '||' operator
+              get_next_char(ELO); -- Consume this character
+              ELO.tok.kind := ETOK_or;
+            else -- Single '|' bit-or operator
+              ELO.tok.kind := ETOK_bit_or;
+            end if;
+            ELO.valid_token := true;
+            active := false;
+            
+          when BASED_LIT =>
+            if ELO.ch = 'x' or ELO.ch = 'X' then -- Hex
+              lex_st := HEX_LIT;
+            elsif ELO.ch = 'b' or ELO.ch = 'B' then -- Binary
+              lex_st := BINARY_LIT;
+            elsif ELO.ch = 'o' then -- Octal
+              lex_st := OCTAL_LIT;
+            elsif ELO.ch = '.' then -- Float
+              tfloat := 0.0;
+              frac_digits := 0;
+              lex_st := FLOAT_LIT;
+            elsif is_octal_digit(ELO.ch) then -- Assume Octal
+              tval := to_number(ELO.ch);
+              lex_st := OCTAL_LIT;
+            else -- End of number 0
+              ELO.tok.kind := ETOK_integer;
+              ELO.tok.int := tval;
+              ELO.valid_token := true;
+              active := false;
+            end if;
+            
+          when HEX_LIT =>
+            if char.is_hexadecimal_digit(ELO.ch) then
+              tval := tval*16 + to_hex_number(ELO.ch);
+            else -- Done
+              ELO.tok.kind := ETOK_integer;
+              ELO.tok.int := tval;
+              ELO.valid_token := true;
+              active := false;
+            end if;
+
+          when BINARY_LIT =>
+            if ELO.ch = '0' or ELO.ch = '1' then
+              tval := tval*2 + to_number(ELO.ch);
+            else -- Done
+              ELO.tok.kind := ETOK_integer;
+              ELO.tok.int := tval;
+              ELO.valid_token := true;
+              active := false;
+            end if;
+
+          when OCTAL_LIT =>
+            if is_octal_digit(ELO.ch) then
+              tval := tval*8 + to_number(ELO.ch);
+            else -- Done
+              ELO.tok.kind := ETOK_integer;
+              ELO.tok.int := tval;
+              ELO.valid_token := true;
+              active := false;
+            end if;
 
 
           when INTEGER_LIT =>

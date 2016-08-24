@@ -411,9 +411,23 @@ package body vt_expr_interpreter is
         if lterm.tok.kind = ETOK_float then
           to_real(lterm.tok, lreal);
           lterm.tok.float := real(sign) * lreal;
+          
+          if expr.tok.kind = ETOK_bit_not then -- Not supported
+            null; -- FIXME
+          elsif expr.tok.kind = ETOK_not then -- Convert to integer
+            -- FIXME
+            lterm.tok.kind := ETOK_integer;
+          end if; 
         else -- Integer
           lterm.tok.int := sign * lterm.tok.int;
+
+          -- Handle bitwise operations          
+          if expr.tok.kind = ETOK_bit_not then
+            lterm.tok.int := 42; -- FIXME
+          end if;
+
         end if;
+        
 
         -- lterm is already the return value
         --EIO.result.value := lterm;

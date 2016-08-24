@@ -176,6 +176,18 @@ package body vt_lexer is
   end function;
 
 
+  constant OCTAL_CHAR_SET : maps.character_set := (
+    '0'                         to  '7'                        => true,
+    others  =>  false
+  );
+
+  -- // Return true if character is valid for an octal digit
+  function is_octal_digit( ch : character ) return boolean is
+  begin
+    return maps.is_in(ch, OCTAL_CHAR_SET);
+  end function;
+
+
   constant INTEGER_TERMINATOR : maps.character_set := (
     ' '|']'|'}'|';'|HT|LF|NUL => true,
     others => false
@@ -232,7 +244,7 @@ package body vt_lexer is
   procedure next_token( VLO : inout vt_lex_acc; tok : out vt_token ) is
 
     type lexer_state is ( START, IDENTIFIER, STRING_LIT, GROUP_BEGIN, GROUP_END,
-      SUBST_BEGIN, SUBST_END, INTEGER_LIT, FLOAT_LIT, FLOAT_EXPONENT, HEX_LIT,
+      SUBST_BEGIN, SUBST_END, INTEGER_LIT, FLOAT_LIT, FLOAT_EXPONENT, BASED_LIT, HEX_LIT, BINARY_LIT, OCTAL_LIT,
       COMMENT, EOL, EOB );
 
     variable lex_st    : lexer_state := START; -- FSM state
@@ -360,6 +372,10 @@ package body vt_lexer is
 
                 when NUL =>
                   lex_st := EOB;
+                  
+                when '0' =>
+                  tval := 0;
+                  lex_st := BASED_LIT;
 
                 when others =>
                   if char.is_digit(VLO.ch) then
@@ -430,6 +446,61 @@ package body vt_lexer is
               VLO.valid_token := true;
               active := false;
             end if;
+            
+          when BASED_LIT =>
+            if VLO.ch = 'x' or VLO.ch = 'X' then -- Hex
+              lex_st := HEX_LIT;
+            elsif VLO.ch = 'b' or VLO.ch = 'B' then -- Binary
+              lex_st := BINARY_LIT;
+            elsif VLO.ch = 'o' then -- Octal
+              lex_st := OCTAL_LIT;
+            elsif VLO.ch = '.' then -- Float
+              tfloat := 0.0;
+              frac_digits := 0;
+              lex_st := FLOAT_LIT;
+            elsif is_octal_digit(VLO.ch) then -- Assume Octal
+              tval := to_number(VLO.ch);
+              lex_st := OCTAL_LIT;
+            elsif INTEGER_TERMINATOR(VLO.ch) then -- End of number, build an integer (for 0)
+              VLO.tok.kind := TOK_integer;
+              VLO.tok.value := tval * sign;
+              VLO.valid_token := true;
+              active := false;
+            else
+              assert_true(false, "Lexer: Invalid based literal character '" & VLO.ch & "'", error, VLO);
+              active := false;
+            end if;
+            
+          when HEX_LIT =>
+            if char.is_hexadecimal_digit(VLO.ch) then
+              tval := tval*16 + to_hex_number(VLO.ch);
+            else -- Done
+              VLO.tok.kind := TOK_integer;
+              VLO.tok.value := tval * sign;
+              VLO.valid_token := true;
+              active := false;
+            end if;
+
+          when BINARY_LIT =>
+            if VLO.ch = '0' or VLO.ch = '1' then
+              tval := tval*2 + to_number(VLO.ch);
+            else -- Done
+              VLO.tok.kind := TOK_integer;
+              VLO.tok.value := tval * sign;
+              VLO.valid_token := true;
+              active := false;
+            end if;
+
+          when OCTAL_LIT =>
+            if is_octal_digit(VLO.ch) then
+              tval := tval*8 + to_number(VLO.ch);
+            else -- Done
+              VLO.tok.kind := TOK_integer;
+              VLO.tok.value := tval * sign;
+              VLO.valid_token := true;
+              active := false;
+            end if;
+
 
           when INTEGER_LIT =>
             tslen := tslen + 1;
@@ -498,15 +569,15 @@ package body vt_lexer is
               active := false;
             end if;
 
-          when HEX_LIT =>
-            if char.is_hexadecimal_digit(VLO.ch) then
-              tval := tval*16 + to_hex_number(VLO.ch);
-            else
-              VLO.tok.kind := TOK_integer;
-              VLO.tok.value := tval * sign;
-              VLO.valid_token := true;
-              active := false;
-            end if;
+--          when HEX_LIT =>
+--            if char.is_hexadecimal_digit(VLO.ch) then
+--              tval := tval*16 + to_hex_number(VLO.ch);
+--            else
+--              VLO.tok.kind := TOK_integer;
+--              VLO.tok.value := tval * sign;
+--              VLO.valid_token := true;
+--              active := false;
+--            end if;
 
           when GROUP_BEGIN =>
             -- Check if this is a splat operator

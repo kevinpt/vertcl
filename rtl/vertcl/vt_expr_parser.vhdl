@@ -118,23 +118,31 @@ package vt_expr_parser is
 
   -- Binary operator precedence
   constant B_PRECEDENCE : op_precedence_vector(vt_etoken_binary) := (
-    ETOK_minus  => (3, left),
-    ETOK_plus   => (3, left),
-    ETOK_mul    => (4, left),
-    ETOK_div    => (4, left),
-    ETOK_pow    => (5, right),
-    ETOK_eq     => (2, left),
-    ETOK_ne     => (2, left),
-    ETOK_lt     => (2, left),
-    ETOK_gt     => (2, left),
-    ETOK_le     => (2, left),
-    ETOK_ge     => (2, left)
+    ETOK_minus  => (12, left),
+    ETOK_plus   => (12, left),
+    ETOK_mul    => (13, left),
+    ETOK_div    => (13, left),
+    ETOK_mod    => (13, left),
+    ETOK_pow    => (14, right),
+    ETOK_eq     => (9, left),
+    ETOK_ne     => (9, left),
+    ETOK_lt     => (10, left),
+    ETOK_gt     => (10, left),
+    ETOK_le     => (10, left),
+    ETOK_ge     => (10, left),
+    ETOK_and    => (3, left),
+    ETOK_or     => (2, left),
+    ETOK_bit_and => (6, left),
+    ETOK_bit_or  => (4, left),
+    ETOK_bit_xor => (5, left)
     );
 
   -- Unary operator precedence
   constant U_PRECEDENCE : op_precedence_vector(vt_etoken_unary) := (
-    ETOK_minus => (6, left),
-    ETOK_plus => (6, left)
+    ETOK_bit_not => (15, left),
+    ETOK_not     => (15, left),
+    ETOK_minus   => (15, left),
+    ETOK_plus    => (15, left)
   );
 
 
@@ -411,7 +419,7 @@ package body vt_expr_parser is
   function is_unary_operator( kind : vt_etoken_kind ) return boolean is
   begin
     case kind is
-      when ETOK_minus | ETOK_plus => return true;
+      when ETOK_bit_not to ETOK_plus => return true;
       when others => return false;
     end case;
   end function;
@@ -517,7 +525,17 @@ package body vt_expr_parser is
           when ETOK_plus => SU.append(tree_img, "(+: ");
           when ETOK_mul => SU.append(tree_img, "(*: ");
           when ETOK_div => SU.append(tree_img, "(/: ");
+          when ETOK_mod => SU.append(tree_img, "(%: ");
           when ETOK_pow => SU.append(tree_img, "(**: ");
+          
+          when ETOK_bit_not => SU.append(tree_img, "(~: ");
+          when ETOK_bit_and => SU.append(tree_img, "(&: ");
+          when ETOK_bit_or  => SU.append(tree_img, "(|: ");
+          when ETOK_bit_xor => SU.append(tree_img, "(^: ");
+          when ETOK_not => SU.append(tree_img, "(!: ");
+          when ETOK_and => SU.append(tree_img, "(&&: ");
+          when ETOK_or  => SU.append(tree_img, "(||: ");
+          
           when others => SU.append(tree_img, "(?: ");
         end case;
         to_unbounded_string(cur.child, sub_expr);
